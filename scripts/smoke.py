@@ -7,6 +7,7 @@ import hashlib
 import json
 import pathlib
 import queue
+import re
 import subprocess
 import sys
 import tempfile
@@ -14,7 +15,8 @@ import threading
 import time
 import urllib.request
 
-java, plugin, version = sys.argv[1:]
+java, plugin, version = sys.argv[1:4]
+bridge = "--bridge" in sys.argv[4:]
 plugin = pathlib.Path(plugin).resolve()
 headers = {"User-Agent": "VelocityNetworkChat/1.0 (https://github.com/FlintSH/velocity-network-chat)"}
 
@@ -31,6 +33,14 @@ with tempfile.TemporaryDirectory(prefix="networkchat-smoke-") as temp:
     (root / "velocity.jar").write_bytes(jar)
     (root / "plugins").mkdir()
     (root / "plugins/networkchat.jar").write_bytes(plugin.read_bytes())
+    (root / "plugins/networkchat").mkdir()
+    (root / "plugins/networkchat/config.properties").write_text("format.mode=minimessage\nmessage.mode=minimessage\nformat.global=<gray>[<server>]</gray> <prefix><player>: <message>\nmessage.status=<gradient:green:blue>Players:</gradient> <players>, sessions: <sessions>, capture: <capture>, SignedVelocity: <signed>.\nmessage.reload=<green>Configuration reloaded.</green>\n", encoding="utf-8")
+    (root / "plugins/bStats").mkdir()
+    (root / "plugins/bStats/config.txt").write_text("enabled=false\n", encoding="utf-8")
+    if bridge:
+        bridge_jar = download("https://github.com/WiIIiam278/PAPIProxyBridge/releases/download/1.8.4/PAPIProxyBridge-Velocity-1.8.4.jar")
+        assert hashlib.sha256(bridge_jar).hexdigest() == "3250b9c9a500c31aa5a8010afb8a44af9ec39677461117ee77558c836ff0d116", "Bridge checksum mismatch"
+        (root / "plugins/papiproxybridge.jar").write_bytes(bridge_jar)
     (root / "velocity.toml").write_text('''config-version = "2.7"
 bind = "127.0.0.1:0"
 online-mode = false
@@ -73,7 +83,7 @@ try = ["lobby"]
                 try:
                     line = output.get(timeout=1)
                     lines.append(line)
-                    if expected in line:
+                    if expected in re.sub(r"\x1b\[[0-9;]*m", "", line):
                         break
                 except queue.Empty:
                     pass
@@ -87,6 +97,8 @@ try = ["lobby"]
         log = "".join(lines)
         assert "Network Chat enabled" in log, "Plugin did not initialize"
         assert "failed to initialize" not in log and "NoSuchMethodError" not in log and "NoClassDefFoundError" not in log, "Plugin runtime failure"
+        if bridge:
+            assert "PAPIProxyBridge enabled for chat formatting" in log and "PAPIProxyBridge unavailable" not in log, "Optional bridge API failed"
         assert process.returncode == 0, f"Proxy exit code {process.returncode}"
         print(f"PASS: baseline JAR loaded and status/reload worked on Velocity {version} (build {build['id']})")
     finally:

@@ -48,6 +48,7 @@ class NetworkChatTest {
         Scheduler scheduler = mock(Scheduler.class); when(proxy.getScheduler()).thenReturn(scheduler);
         when(scheduler.buildTask(any(), any(Runnable.class))).thenAnswer(i -> {
             Runnable task = i.getArgument(1); Scheduler.TaskBuilder builder = mock(Scheduler.TaskBuilder.class);
+            when(builder.repeat(anyLong(), any(java.util.concurrent.TimeUnit.class))).thenReturn(builder);
             when(builder.schedule()).thenAnswer(j -> { task.run(); return null; }); return builder;
         });
         Logger log = mock(Logger.class);
@@ -177,6 +178,70 @@ class NetworkChatTest {
         Player alice = player("Alice", "lobby"), bob = player("Bob", "survival"); grant(alice, "networkchat.msg"); grant(bob, "networkchat.msg");
         run("msgtoggle", bob); DisconnectEvent event = mock(DisconnectEvent.class); when(event.getPlayer()).thenReturn(bob); plugin.disconnect(event);
         run("msg", alice, "Bob", "hello"); assertEquals("[Alice → You] hello", received.get(bob).get(1));
+    }
+    @Test void staffModeTogglesOrdinaryChatWithoutExposingItToPlayers() {
+        Player alice = player("Alice", "lobby"), bob = player("Bob", "survival"), eve = player("Eve", "lobby");
+        grant(alice, "networkchat.staff.send", "networkchat.staff.receive"); grant(bob, "networkchat.staff.receive");
+        run("sc", alice); plugin.chat(new PlayerChatEvent(alice, "secret"));
+        assertEquals(List.of("[Staff] [lobby] Alice: secret"), received.get(bob)); assertTrue(received.get(eve).isEmpty());
+        run("sc", alice, "off"); plugin.chat(new PlayerChatEvent(alice, "public")); assertEquals(List.of("[lobby] Alice: public"), received.get(eve));
+    }
+    @Test void staffModeCannotEnableOnAnUnsafeSignedBackend() {
+        Player alice = player("Alice", "lobby"), eve = player("Eve", "lobby"); modern(alice); grant(alice, "networkchat.staff.send", "networkchat.staff.receive");
+        run("sc", alice, "on"); assertTrue(received.get(alice).get(0).startsWith("Staff mode needs safe chat capture"));
+        PlayerChatEvent event = new PlayerChatEvent(alice, "ordinary"); plugin.chat(event); assertTrue(event.getResult().isAllowed()); assertTrue(received.get(eve).isEmpty());
+    }
+    @Test void staffModeBlocksUnsafeServerSwitchUntilTurnedOff() throws Exception {
+        initialize(true, "chat.signed-backends=lobby\n");
+        Player alice = player("Alice", "lobby"); modern(alice); grant(alice, "networkchat.staff.send", "networkchat.staff.receive"); run("sc", alice, "on");
+        var destination = mock(com.velocitypowered.api.proxy.server.RegisteredServer.class);
+        when(destination.getServerInfo()).thenReturn(new ServerInfo("unsafe", new java.net.InetSocketAddress("localhost", 25566)));
+        var event = new com.velocitypowered.api.event.player.ServerPreConnectEvent(alice, destination); plugin.preConnect(event); assertFalse(event.getResult().isAllowed());
+        run("sc", alice, "off"); event = new com.velocitypowered.api.event.player.ServerPreConnectEvent(alice, destination); plugin.preConnect(event); assertTrue(event.getResult().isAllowed());
+    }
+    @Test void staffModeFailsClosedAfterUnsafeReloadAndCanStillBeDisabled() throws Exception {
+        initialize(true, "chat.signed-backends=lobby\n");
+        Player alice = player("Alice", "lobby"), eve = player("Eve", "lobby"); modern(alice); grant(alice, "networkchat.staff.send", "networkchat.staff.receive", "networkchat.admin");
+        run("sc", alice, "on"); Files.writeString(directory.resolve("config.properties"), "chat.capture=false\n"); run("nchat", alice, "reload");
+        PlayerChatEvent event = new PlayerChatEvent(alice, "secret"); plugin.chat(event); assertFalse(event.getResult().isAllowed());
+        verify(alice).disconnect(any(Component.class)); assertTrue(received.get(eve).isEmpty());
+        permissions.get(alice).clear(); run("sc", alice, "off"); assertEquals("Staff chat: off.", received.get(alice).get(received.get(alice).size()-1));
+    }
+    @Test void earlierStaffPermissionRevocationNeverRoutesOrdinaryChatPublicly() {
+        Player alice = player("Alice", "lobby"), eve = player("Eve", "lobby"); grant(alice, "networkchat.staff.send", "networkchat.staff.receive");
+        run("sc", alice, "on"); permissions.get(alice).clear(); PlayerChatEvent event = new PlayerChatEvent(alice, "secret"); plugin.chat(event);
+        assertFalse(event.getResult().isAllowed()); assertTrue(received.get(eve).isEmpty()); run("sc", alice); assertEquals("Staff chat: off.", received.get(alice).get(2));
+    }
+    @Test void legacyNormalChatCompletionsIncludeRemotePlayersAndFilterHiddenNames() {
+        Player alice = player("Alice", "lobby"), bob = player("Bob", "survival"), hidden = player("Bobby", "survival"); grant(hidden, "networkchat.hidden");
+        var suggestions = new ArrayList<>(List.of("Bobby"));
+        var event = new com.velocitypowered.api.event.player.TabCompleteEvent(alice, "hello B", suggestions); plugin.tabComplete(event); assertEquals(List.of("Bob"), event.getSuggestions());
+        var backend = new ArrayList<>(List.of("backend")); plugin.tabComplete(new com.velocitypowered.api.event.player.TabCompleteEvent(alice, "/backend B", backend)); assertEquals(List.of("backend"), backend);
+    }
+    @Test void messageBodiesCompleteNetworkNamesAndHideRestrictedPlayers() {
+        Player alice = player("Alice", "lobby"), bob = player("Bob", "survival"), hidden = player("Bobby", "survival"); grant(alice, "networkchat.msg", "networkchat.staff.send", "networkchat.staff.receive"); grant(hidden, "networkchat.hidden");
+        assertEquals(List.of("Bob"), commands.get("g").suggest(invocation(alice, "hello", "B")));
+        assertEquals(List.of("Bob"), commands.get("sc").suggest(invocation(alice, "hello", "B")));
+        assertEquals(List.of("Bob"), commands.get("msg").suggest(invocation(alice, "Bob", "hello", "B")));
+    }
+    @Test void delayedPlaceholderMessagesStayOrderedAndPermissionIsCheckedAtDelivery() throws Exception {
+        initialize(false, "chat.cooldown-ms=0\nformat.global={prefix}{player}: {message}\n");
+        Player alice = player("Alice", "lobby"), bob = player("Bob", "survival");
+        var pending = new ArrayList<java.util.concurrent.CompletableFuture<String>>();
+        plugin.usePlaceholderResolver((expression, id) -> { var future = new java.util.concurrent.CompletableFuture<String>(); pending.add(future); return future; });
+        run("g", alice, "first"); run("g", alice, "second"); assertEquals(1, pending.size()); assertTrue(received.get(bob).isEmpty());
+        pending.get(0).complete("&a[VIP] "); assertEquals(List.of("[VIP] Alice: first"), received.get(bob)); assertEquals(2, pending.size());
+        pending.get(1).complete("&a[VIP] "); assertEquals("[VIP] Alice: second", received.get(bob).get(1));
+        run("g", alice, "third");
+        Files.writeString(directory.resolve("config.properties"), "permission.global-receive=receive.changed\n"); grant(alice, "networkchat.admin"); run("nchat", alice, "reload");
+        pending.get(2).complete("[VIP] "); assertEquals(2, received.get(bob).size());
+    }
+    @Test void ignoringDuringPrivatePlaceholderLookupBlocksEventualDelivery() throws Exception {
+        initialize(false, "private.cooldown-ms=0\nformat.private-received={prefix}{player}: {message}\n");
+        Player alice = player("Alice", "lobby"), bob = player("Bob", "survival"); grant(alice, "networkchat.msg"); grant(bob, "networkchat.msg");
+        var pending = new java.util.concurrent.CompletableFuture<String>(); plugin.usePlaceholderResolver((expression, id) -> pending);
+        run("msg", alice, "Bob", "secret"); run("ignore", bob, "Alice"); pending.complete("[VIP] ");
+        assertEquals(List.of("Alice: ignore on."), received.get(bob)); assertEquals(List.of("That player is unavailable."), received.get(alice));
     }
     @Test void aliasCollisionPreventsPartialInitialization() {
         when(manager.hasCommand("sc")).thenReturn(true); plugin = new NetworkChat(proxy, mock(Logger.class), directory); plugin.initialize(new ProxyInitializeEvent());

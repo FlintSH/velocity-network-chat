@@ -1,0 +1,8 @@
+Velocity Network Chat bundles isolated copies of:
+- Adventure, Adventure Key, MiniMessage, text serializers, Examination (Kyori/PaperMC contributors): MIT license.
+- Gson, Auto Service annotations, Error Prone annotations (Google contributors): Apache License 2.0.
+- Java annotations (JetBrains contributors): Apache License 2.0.
+
+Their packages are relocated under dev.flint.networkchat.formatting.lib.
+Full MIT and Apache license text accompanies this notice.
+PAPIProxyBridge and Velocity are provided integrations and are not bundled.

@@ -9,6 +9,7 @@ import com.velocitypowered.api.event.proxy.*;
 import com.velocitypowered.api.plugin.*;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.*;
+import com.velocitypowered.api.scheduler.ScheduledTask;
 import net.kyori.adventure.text.Component;
 import org.slf4j.Logger;
 
@@ -26,16 +27,26 @@ public final class NetworkChat {
     private volatile Settings settings;
     private final List<String> registered = new ArrayList<>();
     private boolean signedVelocity;
+    private PlaceholderResolver placeholderResolver;
+    private MessageRenderer renderer = new MessageRenderer(null);
+    private final ChatCompletion completions;
+    private ScheduledTask completionTask;
 
     @Inject
     public NetworkChat(ProxyServer proxy, Logger logger, @DataDirectory Path directory) {
         this.proxy = proxy; this.logger = logger; this.directory = directory;
+        this.completions = new ChatCompletion(logger);
     }
     @Subscribe
     public void initialize(ProxyInitializeEvent event) {
         try {
             settings = Settings.load(directory);
             signedVelocity = proxy.getPluginManager().isLoaded("signedvelocity");
+            if (proxy.getPluginManager().isLoaded("papiproxybridge")) {
+                try { placeholderResolver = new PapiBridge(); placeholderResolver.configure(settings); logger.info("PAPIProxyBridge enabled for chat formatting"); }
+                catch (LinkageError | RuntimeException error) { placeholderResolver = null; logger.warn("PAPIProxyBridge unavailable; using configured placeholder fallback", error); }
+            }
+            renderer = new MessageRenderer(placeholderResolver);
             // Validate every alias before registering any commands.
             for (String kind : kinds()) for (String alias : settings.list("command." + kind))
                 if (proxy.getCommandManager().hasCommand(alias)) throw new IllegalArgumentException("Command already registered: /" + alias);
@@ -45,6 +56,7 @@ public final class NetworkChat {
                     .aliases(aliases.subList(1, aliases.size()).toArray(String[]::new)).plugin(this).build(), new ChatCommand(kind));
                 registered.addAll(aliases);
             }
+            startCompletions();
             logger.info("Network Chat enabled for {} backend servers. SignedVelocity: {}", proxy.getAllServers().size(), signedVelocity);
             if (!signedVelocity) logger.warn("Signed chat capture is disabled. /g and /sc work; install SignedVelocity on proxy and backends for normal modern cross-server chat.");
         } catch (Exception exception) {
@@ -53,6 +65,7 @@ public final class NetworkChat {
             logger.error("Network Chat failed to initialize; no chat is intercepted", exception);
         }
     }
+    void usePlaceholderResolver(PlaceholderResolver resolver) { placeholderResolver = resolver; renderer = new MessageRenderer(resolver); }
     private static List<String> kinds() { return List.of("global", "staff", "message", "reply", "ignore", "toggle", "channel", "admin"); }
     private Session session(Player player) { return sessions.computeIfAbsent(player.getUniqueId(), ignored -> new Session()); }
     private String server(Player player) { return player.getCurrentServer().map(s -> s.getServerInfo().getName()).orElse(""); }
@@ -65,12 +78,19 @@ public final class NetworkChat {
     }
     private boolean canCapture(Player player, Settings config) {
         // 760 = 1.19.1: denial can break a signed chat chain without backend coordination.
-        return config.bool("chat.capture") && ((player.getProtocolVersion().getProtocol() >= 4 && player.getProtocolVersion().getProtocol() < 760)
-            || (signedVelocity && config.signedBackend(server(player))));
+        return canCapture(player, config, server(player));
+    }
+    private boolean canCapture(Player player, Settings config, String backend) {
+        return config.bool("chat.capture") && !config.excluded(backend) && !backend.isEmpty() && ((player.getProtocolVersion().getProtocol() >= 4 && player.getProtocolVersion().getProtocol() < 760)
+            || (signedVelocity && config.signedBackend(backend)));
     }
     private void notice(CommandSource target, Settings config, String key) { notice(target, config, key, Map.of()); }
     private void notice(CommandSource target, Settings config, String key, Map<String, String> values) {
-        target.sendMessage(config.render("message." + key, values));
+        if (target instanceof Player player) {
+            renderer.render(config, "message." + key, player.getUniqueId(), values).thenAccept(rendered -> {
+                if (player.isActive() && settings != null) player.sendMessage(rendered);
+            });
+        } else target.sendMessage(config.render("message." + key, values));
     }
     private boolean allowed(Player player, Settings config, String permission) {
         if (!permission(player, config, permission)) { notice(player, config, "no-permission"); return false; }
@@ -98,8 +118,14 @@ public final class NetworkChat {
         Settings config = settings;
         if (config == null || !event.getResult().isAllowed()) return;
         Player sender = event.getPlayer();
-        if (!canCapture(sender, config) || config.excluded(server(sender)) || server(sender).isEmpty()) return;
-        String channel = session(sender).channel;
+        Session state = session(sender);
+        if (state.staffChat && !canCapture(sender, config)) {
+            sender.disconnect(config.render("message.staff-disconnected", Map.of()));
+            event.setResult(PlayerChatEvent.ChatResult.denied());
+            return;
+        }
+        if (!canCapture(sender, config)) return;
+        String channel = state.staffChat ? "staff" : state.channel;
         if (channel == null) channel = config.get("chat.default-channel");
         // Capture both global and local to enforce the same permissions/anti-spam.
         String message = event.getResult().getMessage().orElse(event.getMessage());
@@ -111,48 +137,103 @@ public final class NetworkChat {
         if (!availableServer(sender, config) || !allowed(sender, config, channel + "-send") || !validate(sender, config, channel, message)) return;
         if (channel.equals("staff") && !allowed(sender, config, "staff-receive")) return;
         String origin = server(sender);
-        Component rendered = config.render("format." + channel, Map.of("player", sender.getUsername(), "server", config.label(origin), "message", message));
-        String group = config.group(origin);
-        for (Player recipient : proxy.getAllPlayers()) {
-            String destination = server(recipient);
-            if (destination.isEmpty()) continue;
-            if (channel.equals("staff")) {
-                if (permission(recipient, config, "staff-receive")) recipient.sendMessage(rendered);
-                continue;
+        Map<String, String> input = Map.of("player", sender.getUsername(), "server", config.label(origin), "message", message);
+        Session state = session(sender);
+        if (!state.enqueue(() -> renderer.render(config, "format." + channel, sender.getUniqueId(), input).thenAccept(rendered -> {
+            Settings live = settings;
+            if (!deliveryValid(sender, state, origin, live) || !permission(sender, live, channel + "-send")
+                || (channel.equals("staff") && !permission(sender, live, "staff-receive"))) {
+                if (sender.isActive() && live != null) notice(sender, live, "delivery-cancelled");
+                return;
             }
-            if (config.excluded(destination)) continue;
-            if (channel.equals("local") ? !destination.equals(origin) : !config.group(destination).equals(group)) continue;
-            if (!permission(recipient, config, "global-receive")) continue;
-            if (session(recipient).ignored.contains(sender.getUniqueId())) continue;
-            recipient.sendMessage(rendered);
-        }
+            String group = live.group(origin);
+            for (Player recipient : proxy.getAllPlayers()) {
+                String destination = server(recipient);
+                if (!recipient.isActive() || destination.isEmpty()) continue;
+                if (channel.equals("staff")) {
+                    if (permission(recipient, live, "staff-receive")) recipient.sendMessage(rendered);
+                    continue;
+                }
+                if (live.excluded(destination)) continue;
+                if (channel.equals("local") ? !destination.equals(origin) : !live.group(destination).equals(group)) continue;
+                if (!permission(recipient, live, "global-receive")) continue;
+                if (session(recipient).ignored.contains(sender.getUniqueId())) continue;
+                recipient.sendMessage(rendered);
+            }
+        }))) notice(sender, config, "queue-full");
+    }
+    private boolean deliveryValid(Player sender, Session state, String origin, Settings config) {
+        return config != null && sender.isActive() && sessions.get(sender.getUniqueId()) == state && server(sender).equals(origin) && !config.excluded(origin);
+    }
+    private boolean privateAvailable(Player sender, Player target, Settings config) {
+        return config != null && config.bool("private.enabled") && permission(sender, config, "private")
+            && target.isActive() && visible(sender, target, config) && !server(target).isEmpty() && !config.excluded(server(target))
+            && (!config.bool("private.respect-groups") || config.group(server(sender)).equals(config.group(server(target))))
+            && session(target).receiving && !session(target).ignored.contains(sender.getUniqueId()) && !session(sender).ignored.contains(target.getUniqueId());
     }
 
     private void message(Player sender, Settings config, Player target, String text) {
         if (!config.bool("private.enabled")) { notice(sender, config, "private-disabled"); return; }
         if (!allowed(sender, config, "private") || !availableServer(sender, config)) return;
         if (!config.bool("private.allow-self") && sender.getUniqueId().equals(target.getUniqueId())) { notice(sender, config, "self"); return; }
-        if (!target.isActive() || !visible(sender, target, config) || server(target).isEmpty() || config.excluded(server(target))
-            || (config.bool("private.respect-groups") && !config.group(server(sender)).equals(config.group(server(target))))
-            || !session(target).receiving || session(target).ignored.contains(sender.getUniqueId()) || session(sender).ignored.contains(target.getUniqueId())) {
-            notice(sender, config, "unavailable"); return;
-        }
+        if (!privateAvailable(sender, target, config)) { notice(sender, config, "unavailable"); return; }
         if (!validate(sender, config, "private", text)) return;
         Map<String, String> values = Map.of("player", sender.getUsername(), "target", target.getUsername(), "server", config.label(server(sender)), "message", text);
-        target.sendMessage(config.render("format.private-received", values));
-        sender.sendMessage(config.render("format.private-sent", values));
-        session(sender).reply = target.getUniqueId(); session(target).reply = sender.getUniqueId();
+        Session state = session(sender), targetState = session(target);
+        String origin = server(sender);
+        if (!state.enqueue(() -> renderer.render(config, "format.private-received", sender.getUniqueId(), values)
+            .thenCombine(renderer.render(config, "format.private-sent", sender.getUniqueId(), values), (received, sent) -> new Component[]{received, sent})
+            .thenAccept(rendered -> {
+                Settings live = settings;
+                if (!deliveryValid(sender, state, origin, live) || sessions.get(target.getUniqueId()) != targetState || !privateAvailable(sender, target, live)) {
+                    if (sender.isActive() && live != null) notice(sender, live, "unavailable"); return;
+                }
+                target.sendMessage(rendered[0]); sender.sendMessage(rendered[1]);
+                state.reply = target.getUniqueId(); targetState.reply = sender.getUniqueId();
+            }))) notice(sender, config, "queue-full");
+    }
+
+    @Subscribe(order = PostOrder.LATE)
+    public void preConnect(ServerPreConnectEvent event) {
+        Settings config = settings;
+        Session state = sessions.get(event.getPlayer().getUniqueId());
+        if (config == null || state == null || !state.staffChat || !event.getResult().isAllowed()) return;
+        event.getResult().getServer().ifPresent(target -> {
+            if (!canCapture(event.getPlayer(), config, target.getServerInfo().getName())) {
+                event.setResult(ServerPreConnectEvent.ServerResult.denied()); notice(event.getPlayer(), config, "staff-switch-blocked");
+            }
+        });
+    }
+    @Subscribe
+    public void tabComplete(TabCompleteEvent event) {
+        Settings config = settings;
+        if (config != null) completions.complete(event, config, proxy.getAllPlayers(), (viewer, target) -> visible(viewer, target, config));
+    }
+    @Subscribe
+    public void connected(ServerConnectedEvent event) { completions.backendChanged(event.getPlayer()); refreshCompletions(); }
+    private void refreshCompletions() {
+        Settings config = settings;
+        if (config != null) completions.refresh(config, proxy.getAllPlayers(), player -> permission(player, config, "hidden"), player -> permission(player, config, "see-hidden"));
+    }
+    private void startCompletions() {
+        if (completionTask != null) completionTask.cancel();
+        completionTask = proxy.getScheduler().buildTask(this, this::refreshCompletions)
+            .repeat(settings.number("suggestions.refresh-ms"), TimeUnit.MILLISECONDS).schedule();
     }
 
     @Subscribe
     public void disconnect(DisconnectEvent event) {
         UUID id = event.getPlayer().getUniqueId();
         sessions.remove(id);
+        completions.disconnected(event.getPlayer());
+        Settings config = settings;
+        if (config != null) completions.refresh(config, proxy.getAllPlayers().stream().filter(p -> !p.getUniqueId().equals(id)).toList(),
+            player -> permission(player, config, "hidden"), player -> permission(player, config, "see-hidden"));
         // Reply links are cleared; ignores survive the target's reconnect within the viewer's session.
         sessions.values().forEach(state -> { if (id.equals(state.reply)) state.reply = null; });
     }
     @Subscribe
-    public void shutdown(ProxyShutdownEvent event) { settings = null; sessions.clear(); }
+    public void shutdown(ProxyShutdownEvent event) { settings = null; if (completionTask != null) completionTask.cancel(); sessions.clear(); }
 
     private final class ChatCommand implements SimpleCommand {
         private final String kind;
@@ -166,7 +247,21 @@ public final class NetworkChat {
             if (kind.equals("admin")) { admin(source, config, args); return; }
             if (!(source instanceof Player player)) { notice(source, config, "players-only"); return; }
             switch (kind) {
-                case "global", "staff" -> {
+                case "staff" -> {
+                    if (args.length == 0 || (args.length == 1 && Set.of("on", "off").contains(args[0].toLowerCase(Locale.ROOT)))) {
+                        Session state = session(player);
+                        Boolean enabled = args.length == 0 ? null : args[0].equalsIgnoreCase("on");
+                        // Turning off remains possible after permission revocation or disabling toggles.
+                        if (Boolean.FALSE.equals(enabled) || (enabled == null && state.staffChat)) {
+                            state.toggleStaff(false); notice(player, config, "staff-toggle", Map.of("state", "off")); return;
+                        }
+                        if (!config.bool("staff.toggle")) { notice(player, config, "staff-toggle-disabled"); return; }
+                        if (!allowed(player, config, "staff-send") || !allowed(player, config, "staff-receive")) return;
+                        if (!canCapture(player, config)) { notice(player, config, "staff-unsafe"); return; }
+                        state.toggleStaff(true); notice(player, config, "staff-toggle", Map.of("state", "on"));
+                    } else broadcast(player, config, "staff", String.join(" ", args));
+                }
+                case "global" -> {
                     if (args.length == 0) notice(player, config, "usage-" + kind);
                     else broadcast(player, config, kind, String.join(" ", args));
                 }
@@ -208,6 +303,7 @@ public final class NetworkChat {
                     String channel = args[0].toLowerCase(Locale.ROOT);
                     if (!allowed(player, config, channel + "-send")) return;
                     session(player).channel = channel;
+                    session(player).toggleStaff(false);
                     notice(player, config, "channel", Map.of("channel", channel));
                 }
                 default -> throw new IllegalStateException("Unknown command " + kind);
@@ -217,16 +313,29 @@ public final class NetworkChat {
             Settings config = settings;
             if (config == null) return List.of();
             String[] args = invocation.arguments();
+            if (kind.equals("global") || kind.equals("staff") || kind.equals("reply") || (kind.equals("message") && args.length > 1)) {
+                if (!(invocation.source() instanceof Player viewer)) return List.of();
+                String permission = kind.equals("staff") ? "staff-send" : kind.equals("global") ? "global-send" : "private";
+                if (!permission(viewer, config, permission)) return List.of();
+                String prefix = args.length == 0 ? "" : args[args.length - 1].toLowerCase(Locale.ROOT);
+                List<String> names = new ArrayList<>(playerSuggestions(viewer, config, prefix));
+                if (kind.equals("staff") && args.length <= 1 && permission(viewer, config, "staff-receive"))
+                    for (String option : List.of("on", "off")) if (option.startsWith(prefix)) names.add(option);
+                return names;
+            }
             if (args.length > 1) return List.of();
             String prefix = args.length == 0 ? "" : args[0].toLowerCase(Locale.ROOT);
             if (kind.equals("admin")) return permission(invocation.source(), config, "admin") ? List.of("reload", "status").stream().filter(s -> s.startsWith(prefix)).toList() : List.of();
             if (!(invocation.source() instanceof Player viewer)) return List.of();
             if (kind.equals("channel")) return List.of("global", "local").stream().filter(s -> s.startsWith(prefix)).toList();
             if (!Set.of("message", "ignore").contains(kind) || !permission(viewer, config, "private")) return List.of();
-            return proxy.getAllPlayers().stream().filter(p -> !p.getUniqueId().equals(viewer.getUniqueId()) && visible(viewer, p, config))
-                .map(Player::getUsername).filter(s -> s.toLowerCase(Locale.ROOT).startsWith(prefix)).sorted(String.CASE_INSENSITIVE_ORDER)
-                .limit(config.number("suggestions.limit")).toList();
+            return playerSuggestions(viewer, config, prefix);
         }
+    }
+    private List<String> playerSuggestions(Player viewer, Settings config, String prefix) {
+        return proxy.getAllPlayers().stream().filter(Player::isActive).filter(p -> !p.getUniqueId().equals(viewer.getUniqueId()) && visible(viewer, p, config))
+            .map(Player::getUsername).filter(s -> s.toLowerCase(Locale.ROOT).startsWith(prefix)).sorted(String.CASE_INSENSITIVE_ORDER)
+            .limit(config.number("suggestions.limit")).toList();
     }
     private void admin(CommandSource source, Settings config, String[] args) {
         if (!permission(source, config, "admin")) { notice(source, config, "no-permission"); return; }
@@ -240,7 +349,10 @@ public final class NetworkChat {
         proxy.getScheduler().buildTask(this, () -> {
             try {
                 Settings replacement = Settings.load(directory);
-                if (settings != null) { settings = replacement; notice(source, replacement, "reload"); }
+                if (settings != null) {
+                    if (placeholderResolver != null) placeholderResolver.configure(replacement);
+                    settings = replacement; startCompletions(); refreshCompletions(); notice(source, replacement, "reload");
+                }
             } catch (Exception exception) {
                 logger.error("Configuration reload rejected", exception); notice(source, config, "reload-failed");
             } finally { reloading.set(false); }

@@ -34,7 +34,10 @@ jobs:
       - name: Build baseline JAR for runtime compatibility check
         run: mvn -B -ntp -DskipTests clean package
       - name: Start a real proxy and exercise plugin commands
-        run: python3 scripts/smoke.py "$JAVA_HOME/bin/java" target/velocity-network-chat-1.0.0.jar '${{ matrix.api }}'
+        run: python3 scripts/smoke.py "$JAVA_HOME/bin/java" plugin/target/velocity-network-chat-1.0.0.jar '${{ matrix.api }}'
+      - name: Verify optional PAPIProxyBridge API with a real proxy
+        if: matrix.api == '3.4.0'
+        run: python3 scripts/smoke.py "$JAVA_HOME/bin/java" plugin/target/velocity-network-chat-1.0.0.jar '${{ matrix.api }}' --bridge
   release:
     name: Publish commit release
     needs: test
@@ -53,14 +56,14 @@ jobs:
         run: mvn -B -ntp org.codehaus.mojo:versions-maven-plugin:2.18.0:set -DnewVersion="1.0.${GITHUB_RUN_NUMBER}" -DgenerateBackupPoms=false
       - run: mvn -B -ntp clean verify
       - name: Generate checksum
-        working-directory: target
+        working-directory: plugin/target
         run: sha256sum velocity-network-chat-*.jar > SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: velocity-network-chat-${{ github.run_number }}
           path: |
-            target/velocity-network-chat-*.jar
-            target/SHA256SUMS
+            plugin/target/velocity-network-chat-*.jar
+            plugin/target/SHA256SUMS
       - name: Publish release for this commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -69,4 +72,4 @@ jobs:
           if ! gh release view "$tag" >/dev/null 2>&1; then
             gh release create "$tag" --target "$GITHUB_SHA" --title "Velocity Network Chat 1.0.${GITHUB_RUN_NUMBER}" --prerelease --generate-notes
           fi
-          gh release upload "$tag" target/velocity-network-chat-*.jar target/SHA256SUMS --clobber
+          gh release upload "$tag" plugin/target/velocity-network-chat-*.jar plugin/target/SHA256SUMS --clobber

@@ -4,6 +4,6 @@
   "version": "${project.version}",
   "description": "Configurable cross-server chat, staff chat and private messaging",
   "authors": ["FlintSH"],
-  "dependencies": [{"id": "signedvelocity", "optional": true}],
+  "dependencies": [{"id": "signedvelocity", "optional": true}, {"id": "papiproxybridge", "optional": true}],
   "main": "dev.flint.networkchat.NetworkChat"
 }

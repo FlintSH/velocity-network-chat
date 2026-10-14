@@ -11,21 +11,34 @@ final class Settings {
     private final Map<String, String> values;
     private final Map<String, Set<String>> lists;
     private final Map<String, Component> templates;
+    private final Map<String, Set<String>> placeholders;
     private Settings(Map<String, String> values) {
         this.values = Map.copyOf(values);
         Map<String, Set<String>> parsedLists = new HashMap<>();
         Map<String, Component> parsedTemplates = new HashMap<>();
+        Map<String, Set<String>> parsedPlaceholders = new HashMap<>();
         values.forEach((key, value) -> {
             if (key.startsWith("command.") || key.equals("chat.signed-backends") || key.equals("chat.excluded-servers")) {
                 Set<String> list = new LinkedHashSet<>();
                 for (String item : value.split(",")) if (!item.isBlank()) list.add(item.trim().toLowerCase(Locale.ROOT));
                 parsedLists.put(key, Collections.unmodifiableSet(list));
             }
-            if (key.startsWith("format.") || key.startsWith("message.")) parsedTemplates.put(key, Text.parse(value));
+            if ((key.startsWith("format.") || key.startsWith("message.")) && !key.endsWith(".mode")) {
+                parsedTemplates.put(key, Text.parse(value, values.get(key.startsWith("format.") ? "format.mode" : "message.mode")));
+                Set<String> tokens = new LinkedHashSet<>();
+                var matcher = java.util.regex.Pattern.compile("%[^%\\s]+%").matcher(value);
+                while (matcher.find()) tokens.add(matcher.group());
+                if (value.contains("{prefix}") || value.contains("<prefix>")) tokens.add(values.get("placeholders.prefix"));
+                tokens.remove("");
+                if (tokens.size() > 32) throw new IllegalArgumentException("At most 32 PAPI expressions per template: " + key);
+                parsedPlaceholders.put(key, Set.copyOf(tokens));
+            }
         });
-        lists = Map.copyOf(parsedLists); templates = Map.copyOf(parsedTemplates);
+        lists = Map.copyOf(parsedLists); templates = Map.copyOf(parsedTemplates); placeholders = Map.copyOf(parsedPlaceholders);
     }
     Component render(String key, Map<String, String> values) { return Text.render(templates.get(key), values); }
+    Component template(String key) { return templates.get(key); }
+    Set<String> placeholders(String key) { return placeholders.getOrDefault(key, Set.of()); }
     static Settings load(Path directory) throws IOException {
         Properties defaults = new Properties();
         try (var stream = Settings.class.getResourceAsStream("/config.properties")) {
@@ -61,7 +74,7 @@ final class Settings {
     boolean signedBackend(String server) { var servers = list("chat.signed-backends"); return servers.contains("*") || servers.contains(server.toLowerCase(Locale.ROOT)); }
     private void validate() {
         if (number("config-version") != 1) throw new IllegalArgumentException("Unsupported config-version");
-        for (String key : List.of("chat.capture", "private.enabled", "private.allow-self", "private.respect-groups"))
+        for (String key : List.of("chat.capture", "private.enabled", "private.allow-self", "private.respect-groups", "placeholders.enabled", "suggestions.chat", "suggestions.legacy-tab-list", "staff.toggle"))
             if (!Set.of("true", "false").contains(get(key))) throw new IllegalArgumentException("Expected true/false: " + key);
         for (String key : List.of("chat.cooldown-ms", "staff.cooldown-ms", "private.cooldown-ms"))
             if (number(key) < 0 || number(key) > 60000) throw new IllegalArgumentException("Cooldown must be 0–60000: " + key);
@@ -70,6 +83,14 @@ final class Settings {
         if (!Set.of("global", "local").contains(get("chat.default-channel"))) throw new IllegalArgumentException("Default channel must be global or local");
         for (String key : List.of("permission.staff-send", "permission.staff-receive", "permission.admin", "permission.hidden", "permission.see-hidden", "permission.bypass-cooldown"))
             if (get(key).isBlank()) throw new IllegalArgumentException("Privileged permission must not be empty: " + key);
+        for (String key : List.of("format.mode", "message.mode", "placeholders.format"))
+            if (!Set.of("legacy", "minimessage", "plain").contains(get(key))) throw new IllegalArgumentException("Expected legacy/minimessage/plain: " + key);
+        for (String key : List.of("suggestions.chat-limit", "suggestions.legacy-tab-limit"))
+            if (number(key) < 1 || number(key) > 100000) throw new IllegalArgumentException("Limit must be 1–100000: " + key);
+        if (number("suggestions.refresh-ms") < 250 || number("suggestions.refresh-ms") > 60000) throw new IllegalArgumentException("Refresh must be 250–60000 ms");
+        if (number("placeholders.timeout-ms") < 50 || number("placeholders.timeout-ms") > 10000) throw new IllegalArgumentException("PAPI timeout must be 50–10000 ms");
+        if (number("placeholders.cache-ms") < 0 || number("placeholders.cache-ms") > 3600000) throw new IllegalArgumentException("PAPI cache must be 0–3600000 ms");
+        Text.expansion(get("placeholders.fallback"), get("placeholders.format"));
         Set<String> aliases = new HashSet<>();
         for (String kind : List.of("global", "staff", "message", "reply", "ignore", "toggle", "channel", "admin")) {
             if (list("command." + kind).isEmpty()) throw new IllegalArgumentException("Empty command: " + kind);

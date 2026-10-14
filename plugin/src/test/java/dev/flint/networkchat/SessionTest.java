@@ -26,4 +26,17 @@ class SessionTest {
         assertNull(state.toggleIgnore(UUID.randomUUID())); assertEquals(1000, state.ignored.size());
         assertFalse(state.toggleIgnore(first)); assertTrue(state.toggleIgnore(UUID.randomUUID()));
     }
+    @Test void messageQueueIsBoundedOrderedAndRecoversAfterFailure() {
+        Session state = new Session(); CompletableFuture<Void> first = new CompletableFuture<>();
+        java.util.List<Integer> order = new java.util.ArrayList<>();
+        assertTrue(state.enqueue(() -> { order.add(0); return first; }));
+        for (int i = 1; i < 64; i++) {
+            int number = i;
+            assertTrue(state.enqueue(() -> { order.add(number); return CompletableFuture.completedFuture(null); }));
+        }
+        assertFalse(state.enqueue(() -> { fail("Overflow executed"); return null; })); assertEquals(java.util.List.of(0), order);
+        first.completeExceptionally(new IllegalStateException("backend failed"));
+        assertEquals(64, order.size()); for (int i = 0; i < 64; i++) assertEquals(i, order.get(i));
+        assertTrue(state.enqueue(() -> CompletableFuture.completedFuture(null)));
+    }
 }
