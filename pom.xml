@@ -1,0 +1,18 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>dev.flint</groupId><artifactId>velocity-network-chat</artifactId><version>1.0.0</version>
+  <name>Velocity Network Chat</name><description>Configurable cross-server chat, staff chat and private messaging for Velocity.</description>
+  <properties><maven.compiler.release>17</maven.compiler.release><velocity.api.version>3.1.1</velocity.api.version><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>
+  <repositories><repository><id>papermc</id><url>https://repo.papermc.io/repository/maven-public/</url></repository></repositories>
+  <dependencies>
+    <dependency><groupId>com.velocitypowered</groupId><artifactId>velocity-api</artifactId><version>${velocity.api.version}</version><scope>provided</scope></dependency>
+    <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>5.11.4</version><scope>test</scope></dependency>
+    <dependency><groupId>org.mockito</groupId><artifactId>mockito-core</artifactId><version>5.24.0</version><scope>test</scope></dependency>
+  </dependencies>
+  <build><resources><resource><directory>src/main/resources</directory><filtering>true</filtering></resource></resources><plugins>
+    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-resources-plugin</artifactId><version>3.3.1</version><configuration><propertiesEncoding>UTF-8</propertiesEncoding></configuration></plugin>
+    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.14.0</version><configuration><proc>none</proc></configuration></plugin>
+    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>3.5.2</version></plugin>
+    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-jar-plugin</artifactId><version>3.4.2</version><configuration><archive><manifestEntries><Implementation-Version>${project.version}</Implementation-Version></manifestEntries></archive></configuration></plugin>
+  </plugins></build>
+</project>
