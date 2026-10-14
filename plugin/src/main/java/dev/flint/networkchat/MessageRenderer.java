@@ -35,6 +35,12 @@ final class MessageRenderer {
                 return result;
             });
         }
-        return values.thenApply(resolved -> Text.renderComponents(config.template(key), resolved));
+        return values.thenApply(resolved -> {
+            if (config.bool("placeholders.inherit-name-color") && resolved.containsKey("player")) {
+                var color = Text.rankColor(resolved.get("prefix"));
+                if (color != null) resolved.put("player", resolved.get("player").color(color));
+            }
+            return Text.renderComponents(config.template(key), resolved);
+        });
     }
 }

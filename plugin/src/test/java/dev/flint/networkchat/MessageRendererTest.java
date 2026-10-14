@@ -56,4 +56,37 @@ class MessageRendererTest {
         Component text = new MessageRenderer((e, id) -> { fail("Unneeded request"); return null; }).render(config, "format.global", UUID.randomUUID(), Map.of("player", "Alice", "message", "hello")).get();
         assertEquals("Alice: hello", plain(text));
     }
+    private String colored(Component component) {
+        return net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacySection().serialize(component);
+    }
+    @Test void miniMessageRankColorOverridesWhiteUsernameButNotBracketsOrBody() throws Exception {
+        Settings config = config("format.mode=minimessage\nformat.global=<prefix><white><player></white><gray>: <message></gray>\nplaceholders.format=minimessage\n");
+        var renderer = new MessageRenderer((e, id) -> CompletableFuture.completedFuture("<white>[<red>Admin<white>] "));
+        Component result = renderer.render(config, "format.global", UUID.randomUUID(), Map.of("player", "Alice", "message", "Hello")).get();
+        assertEquals("[Admin] Alice: Hello", plain(result));
+        String legacy = colored(result);
+        assertTrue(legacy.contains("§cAlice"), legacy); assertTrue(legacy.contains("§f] "), legacy); assertTrue(legacy.contains("§7: Hello"), legacy);
+    }
+    @Test void legacyAndRawPapiPrefixesAlsoColorSenderNames() throws Exception {
+        Settings config = config("format.global=%luckperms_prefix%&f{player}&7: {message}\n");
+        Component result = new MessageRenderer((e, id) -> CompletableFuture.completedFuture("&f[&cAdmin&f] "))
+            .render(config, "format.global", UUID.randomUUID(), Map.of("player", "Alice", "message", "Hello")).get();
+        assertTrue(colored(result).contains("§cAlice"));
+    }
+    @Test void nameInheritanceCanBeDisabledAndUncoloredPrefixesKeepTemplateColor() throws Exception {
+        Settings disabled = config("format.global={prefix}&f{player}\nplaceholders.inherit-name-color=false\n");
+        Component result = new MessageRenderer((e, id) -> CompletableFuture.completedFuture("&c[Admin] "))
+            .render(disabled, "format.global", UUID.randomUUID(), Map.of("player", "Alice")).get();
+        assertTrue(colored(result).contains("§fAlice"));
+        Settings plain = config("format.global={prefix}&f{player}\nplaceholders.format=plain\n");
+        result = new MessageRenderer((e, id) -> CompletableFuture.completedFuture("[Admin] "))
+            .render(plain, "format.global", UUID.randomUUID(), Map.of("player", "Alice")).get();
+        assertNull(Text.rankColor(Text.expansion("[Admin] ", "plain"))); assertTrue(colored(result).contains("§fAlice"), colored(result));
+    }
+    @Test void nestedRgbRankStyleAndSymbolOnlyPrefixesAreRecognized() {
+        var expected = net.kyori.adventure.text.format.TextColor.color(0x12ab34);
+        Component nested = Component.empty().color(expected).append(Component.text("Admin")).append(Component.text("] ").color(NamedTextColor.WHITE));
+        assertEquals(expected, Text.rankColor(nested));
+        assertEquals(NamedTextColor.GOLD, Text.rankColor(Text.expansion("&f[&6★&f] ", "legacy")));
+    }
 }

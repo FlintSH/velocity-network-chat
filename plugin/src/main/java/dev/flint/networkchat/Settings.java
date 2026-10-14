@@ -74,7 +74,7 @@ final class Settings {
     boolean signedBackend(String server) { var servers = list("chat.signed-backends"); return servers.contains("*") || servers.contains(server.toLowerCase(Locale.ROOT)); }
     private void validate() {
         if (number("config-version") != 1) throw new IllegalArgumentException("Unsupported config-version");
-        for (String key : List.of("chat.capture", "private.enabled", "private.allow-self", "private.respect-groups", "placeholders.enabled", "suggestions.chat", "suggestions.legacy-tab-list", "staff.toggle"))
+        for (String key : List.of("chat.capture", "private.enabled", "private.allow-self", "private.respect-groups", "placeholders.enabled", "placeholders.inherit-name-color", "suggestions.chat", "suggestions.legacy-tab-list", "staff.toggle"))
             if (!Set.of("true", "false").contains(get(key))) throw new IllegalArgumentException("Expected true/false: " + key);
         for (String key : List.of("chat.cooldown-ms", "staff.cooldown-ms", "private.cooldown-ms"))
             if (number(key) < 0 || number(key) > 60000) throw new IllegalArgumentException("Cooldown must be 0–60000: " + key);

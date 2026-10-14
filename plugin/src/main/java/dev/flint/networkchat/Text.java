@@ -1,6 +1,8 @@
 package dev.flint.networkchat;
 
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.TextComponent;
+import net.kyori.adventure.text.format.TextColor;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import dev.flint.networkchat.formatting.MiniMessageParser;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
@@ -28,6 +30,28 @@ final class Text {
     static Component renderComponents(Component template, Map<String, Component> values) {
         return template.replaceText(builder -> builder.match(TOKEN).replacement((match, ignored) ->
             values.getOrDefault(match.group(1) != null ? match.group(1) : match.group(), Component.text(match.group()))));
+    }
+    /** Last rank-word colour; decorative brackets/whitespace never override the rank itself. */
+    static TextColor rankColor(Component prefix) {
+        record Frame(Component component, TextColor inherited) { }
+        java.util.ArrayDeque<Frame> pending = new java.util.ArrayDeque<>();
+        pending.push(new Frame(prefix, null));
+        TextColor word = null, symbol = null;
+        while (!pending.isEmpty()) {
+            Frame frame = pending.pop();
+            Component component = frame.component();
+            TextColor color = component.color() == null ? frame.inherited() : component.color();
+            if (component instanceof TextComponent text && color != null) {
+                if (text.content().codePoints().anyMatch(Character::isLetterOrDigit)) word = color;
+                if (text.content().codePoints().anyMatch(c -> {
+                    int type = Character.getType(c);
+                    return type == Character.MATH_SYMBOL || type == Character.CURRENCY_SYMBOL || type == Character.MODIFIER_SYMBOL || type == Character.OTHER_SYMBOL;
+                })) symbol = color;
+            }
+            var children = component.children();
+            for (int i = children.size() - 1; i >= 0; i--) pending.push(new Frame(children.get(i), color));
+        }
+        return word == null ? symbol : word;
     }
     static boolean valid(String message, int limit) {
         return !message.isBlank() && message.codePointCount(0, message.length()) <= limit
