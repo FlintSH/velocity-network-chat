@@ -120,6 +120,12 @@ PAPI lookups never block an event thread. Only configured expressions are reques
 
 Separate global/local, staff, and private cooldowns use atomic per-player checks and a monotonic clock. Global and local share a bucket. Blank messages, overlength messages, control characters, and invisible format controls are rejected. Limits count Unicode code points. Suggestions are capped. There is no social spy or message-content logging; admins with console access still control the proxy and its other plugins.
 
+## Proxy join/leave announcements
+
+`announcements.join=true` and `announcements.leave=true` enable one announcement when a player first connects to a backend and one when that proxy session disconnects. Server switches and failed logins do not generate join/leave spam. Configure `format.join` and `format.leave` with `{player}` and `{server}`, using the existing template format mode. `announcements.scope=network|group` selects recipients; excluded servers and `permission.announcements` are respected. Hidden players are announced only to viewers with see-hidden permission (and themselves for joins).
+
+Join templates support PAPI while the backend connection is live. Leave templates use a literal username and the configured fallback for PAPI expressions because the player is already disconnected. Defaults therefore use names without a prefix. Set backend join/quit messages to empty in your backend plugin if you want to avoid also seeing its local announcements. Proxy shutdown may produce leave announcements until the plugin shuts down.
+
 ## Network player-name completion
 
 With `suggestions.chat=true`, ordinary chat completes names across backend servers, respecting `networkchat.hidden` and `networkchat.see.hidden`. Names also complete inside `/g`, `/sc`, `/reply`, and `/msg` message bodies, in addition to private-message target completion. The network still means players connected to this one proxy.

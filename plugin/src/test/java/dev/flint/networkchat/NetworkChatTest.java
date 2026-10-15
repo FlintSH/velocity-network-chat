@@ -247,4 +247,27 @@ class NetworkChatTest {
         when(manager.hasCommand("sc")).thenReturn(true); plugin = new NetworkChat(proxy, mock(Logger.class), directory); plugin.initialize(new ProxyInitializeEvent());
         Player alice = player("Alice", "lobby"); PlayerChatEvent event = new PlayerChatEvent(alice, "hello"); plugin.chat(event); assertTrue(event.getResult().isAllowed());
     }
+    void connectedTo(Player player, String name) {
+        var event = mock(com.velocitypowered.api.event.player.ServerConnectedEvent.class);
+        var backend = mock(com.velocitypowered.api.proxy.server.RegisteredServer.class);
+        when(backend.getServerInfo()).thenReturn(new ServerInfo(name, new java.net.InetSocketAddress("localhost", 25565)));
+        when(event.getPlayer()).thenReturn(player); when(event.getServer()).thenReturn(backend); plugin.connected(event);
+    }
+    @Test void announcesOnlyProxyJoinAndLeaveNotServerSwitchesOrFailedLogins() {
+        Player alice = player("Alice", "lobby"), bob = player("Bob", "survival");
+        connectedTo(alice, "lobby"); connectedTo(alice, "survival");
+        assertEquals(List.of("[+] Alice joined the network."), received.get(bob));
+        DisconnectEvent quit = mock(DisconnectEvent.class); when(quit.getPlayer()).thenReturn(alice); plugin.disconnect(quit);
+        assertEquals(List.of("[+] Alice joined the network.", "[-] Alice left the network."), received.get(bob));
+        Player failed = player("Failed", "lobby"); when(quit.getPlayer()).thenReturn(failed); plugin.disconnect(quit); assertEquals(2, received.get(bob).size());
+    }
+    @Test void announcementsRespectHiddenPlayersGroupsAndConfiguration() throws Exception {
+        initialize(false, "announcements.scope=group\nrouting.group.survival=other\n");
+        Player alice = player("Alice", "lobby"), bob = player("Bob", "lobby"), staff = player("Staff", "lobby"), remote = player("Remote", "survival");
+        grant(alice, "networkchat.hidden"); grant(staff, "networkchat.see.hidden"); connectedTo(alice, "lobby");
+        assertTrue(received.get(bob).isEmpty()); assertTrue(received.get(remote).isEmpty()); assertEquals(1, received.get(staff).size());
+        DisconnectEvent quit = mock(DisconnectEvent.class); when(quit.getPlayer()).thenReturn(alice); plugin.disconnect(quit);
+        assertTrue(received.get(bob).isEmpty()); assertEquals(2, received.get(staff).size());
+        initialize(false, "announcements.join=false\nannouncements.leave=false\n"); connectedTo(bob, "lobby"); when(quit.getPlayer()).thenReturn(bob); plugin.disconnect(quit); assertEquals(2, received.get(staff).size());
+    }
 }

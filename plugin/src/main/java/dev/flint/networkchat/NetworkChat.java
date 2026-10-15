@@ -31,6 +31,8 @@ public final class NetworkChat {
     private MessageRenderer renderer = new MessageRenderer(null);
     private final ChatCompletion completions;
     private ScheduledTask completionTask;
+    private final ConcurrentMap<UUID, Presence> presence = new ConcurrentHashMap<>();
+    private record Presence(String name, String server, boolean hidden) { }
 
     @Inject
     public NetworkChat(ProxyServer proxy, Logger logger, @DataDirectory Path directory) {
@@ -210,7 +212,45 @@ public final class NetworkChat {
         if (config != null) completions.complete(event, config, proxy.getAllPlayers(), (viewer, target) -> visible(viewer, target, config));
     }
     @Subscribe
-    public void connected(ServerConnectedEvent event) { completions.backendChanged(event.getPlayer()); refreshCompletions(); }
+    public void connected(ServerConnectedEvent event) {
+        completions.backendChanged(event.getPlayer()); refreshCompletions();
+        Settings config = settings;
+        if (config == null) return;
+        Player player = event.getPlayer();
+        String backend = event.getServer().getServerInfo().getName();
+        Presence now = new Presence(player.getUsername(), backend, permission(player, config, "hidden"));
+        Presence previous = presence.put(player.getUniqueId(), now);
+        // First backend connection only: switching servers is not a proxy join.
+        if (previous == null && config.bool("announcements.join")) announce(player, config, now, true);
+    }
+    private void announce(Player subject, Settings config, Presence information, boolean join) {
+        if (config.excluded(information.server())) return;
+        String key = join ? "format.join" : "format.leave";
+        Map<String, String> input = Map.of("player", information.name(), "server", config.label(information.server()));
+        CompletableFuture<Component> rendered;
+        if (join) rendered = renderer.render(config, key, subject.getUniqueId(), input);
+        else {
+            // Backend placeholder requests are unavailable after disconnection. Use a literal name.
+            Map<String, Component> values = new HashMap<>();
+            input.forEach((token, value) -> values.put(token, Component.text(value)));
+            values.put("prefix", Component.empty());
+            for (String expression : config.placeholders(key)) values.put(expression, Text.expansion(config.get("placeholders.fallback"), config.get("placeholders.format")));
+            rendered = CompletableFuture.completedFuture(Text.renderComponents(config.template(key), values));
+        }
+        rendered.thenAccept(message -> {
+            Settings live = settings;
+            if (live == null || (join && (presence.get(subject.getUniqueId()) == null || !subject.isActive()))) return;
+            boolean hidden = information.hidden() || (join && permission(subject, live, "hidden"));
+            for (Player recipient : proxy.getAllPlayers()) {
+                String destination = server(recipient);
+                if (!recipient.isActive() || (!join && recipient.getUniqueId().equals(subject.getUniqueId())) || destination.isEmpty() || live.excluded(destination)) continue;
+                if (!permission(recipient, live, "announcements")) continue;
+                if (hidden && !permission(recipient, live, "see-hidden") && !recipient.getUniqueId().equals(subject.getUniqueId())) continue;
+                if (live.get("announcements.scope").equals("group") && !live.group(destination).equals(live.group(information.server()))) continue;
+                recipient.sendMessage(message);
+            }
+        });
+    }
     private void refreshCompletions() {
         Settings config = settings;
         if (config != null) completions.refresh(config, proxy.getAllPlayers(), player -> permission(player, config, "hidden"), player -> permission(player, config, "see-hidden"));
@@ -224,6 +264,12 @@ public final class NetworkChat {
     @Subscribe
     public void disconnect(DisconnectEvent event) {
         UUID id = event.getPlayer().getUniqueId();
+        Presence previous = presence.remove(id);
+        Settings announcementConfig = settings;
+        if (previous != null && announcementConfig != null && announcementConfig.bool("announcements.leave")) {
+            Presence leaving = new Presence(previous.name(), previous.server(), previous.hidden() || permission(event.getPlayer(), announcementConfig, "hidden"));
+            announce(event.getPlayer(), announcementConfig, leaving, false);
+        }
         sessions.remove(id);
         completions.disconnected(event.getPlayer());
         Settings config = settings;
@@ -233,7 +279,7 @@ public final class NetworkChat {
         sessions.values().forEach(state -> { if (id.equals(state.reply)) state.reply = null; });
     }
     @Subscribe
-    public void shutdown(ProxyShutdownEvent event) { settings = null; if (completionTask != null) completionTask.cancel(); sessions.clear(); }
+    public void shutdown(ProxyShutdownEvent event) { settings = null; presence.clear(); if (completionTask != null) completionTask.cancel(); sessions.clear(); }
 
     private final class ChatCommand implements SimpleCommand {
         private final String kind;

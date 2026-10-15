@@ -74,7 +74,7 @@ final class Settings {
     boolean signedBackend(String server) { var servers = list("chat.signed-backends"); return servers.contains("*") || servers.contains(server.toLowerCase(Locale.ROOT)); }
     private void validate() {
         if (number("config-version") != 1) throw new IllegalArgumentException("Unsupported config-version");
-        for (String key : List.of("chat.capture", "private.enabled", "private.allow-self", "private.respect-groups", "placeholders.enabled", "placeholders.inherit-name-color", "suggestions.chat", "suggestions.legacy-tab-list", "staff.toggle"))
+        for (String key : List.of("announcements.join", "announcements.leave", "chat.capture", "private.enabled", "private.allow-self", "private.respect-groups", "placeholders.enabled", "placeholders.inherit-name-color", "suggestions.chat", "suggestions.legacy-tab-list", "staff.toggle"))
             if (!Set.of("true", "false").contains(get(key))) throw new IllegalArgumentException("Expected true/false: " + key);
         for (String key : List.of("chat.cooldown-ms", "staff.cooldown-ms", "private.cooldown-ms"))
             if (number(key) < 0 || number(key) > 60000) throw new IllegalArgumentException("Cooldown must be 0–60000: " + key);
@@ -91,6 +91,7 @@ final class Settings {
         if (number("placeholders.timeout-ms") < 50 || number("placeholders.timeout-ms") > 10000) throw new IllegalArgumentException("PAPI timeout must be 50–10000 ms");
         if (number("placeholders.cache-ms") < 0 || number("placeholders.cache-ms") > 3600000) throw new IllegalArgumentException("PAPI cache must be 0–3600000 ms");
         Text.expansion(get("placeholders.fallback"), get("placeholders.format"));
+        if (!Set.of("network", "group").contains(get("announcements.scope"))) throw new IllegalArgumentException("announcements.scope must be network or group");
         Set<String> aliases = new HashSet<>();
         for (String kind : List.of("global", "staff", "message", "reply", "ignore", "toggle", "channel", "admin")) {
             if (list("command." + kind).isEmpty()) throw new IllegalArgumentException("Empty command: " + kind);
