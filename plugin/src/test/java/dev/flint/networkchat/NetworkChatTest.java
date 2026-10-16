@@ -275,4 +275,13 @@ class NetworkChatTest {
         connectedTo(alice,"lobby");DisconnectEvent quit=mock(DisconnectEvent.class);when(quit.getPlayer()).thenReturn(alice);plugin.disconnect(quit);
         assertEquals(List.of("[+] Alice joined the network.","[-] Alice left the network."),received.get(bob));
     }
+    @Test void rejectedDuplicateLoginCannotAnnounceLeaveOrClearExistingStaffMode() {
+        Player alice=player("Alice","lobby"),viewer=player("Viewer","survival");
+        grant(alice,"networkchat.staff.send","networkchat.staff.receive");connectedTo(alice,"lobby");run("sc",alice,"on");
+        java.util.UUID existingId=alice.getUniqueId();Player duplicate=player("Alice","lobby");when(duplicate.getUniqueId()).thenReturn(existingId);when(duplicate.isActive()).thenReturn(false);
+        DisconnectEvent failed=mock(DisconnectEvent.class);when(failed.getPlayer()).thenReturn(duplicate);plugin.disconnect(failed);
+        plugin.chat(new PlayerChatEvent(alice,"staff secret"));
+        assertEquals(List.of("[+] Alice joined the network."),received.get(viewer));
+        assertTrue(received.get(alice).contains("[Staff] [lobby] Alice: staff secret"));
+    }
 }

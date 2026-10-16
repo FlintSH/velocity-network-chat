@@ -32,7 +32,7 @@ public final class NetworkChat {
     private final ChatCompletion completions;
     private ScheduledTask completionTask;
     private final ConcurrentMap<UUID, Presence> presence = new ConcurrentHashMap<>();
-    private record Presence(String name, String server, boolean hidden) { }
+    private record Presence(Player owner, String name, String server, boolean hidden) { }
 
     @Inject
     public NetworkChat(ProxyServer proxy, Logger logger, @DataDirectory Path directory) {
@@ -69,7 +69,7 @@ public final class NetworkChat {
     }
     void usePlaceholderResolver(PlaceholderResolver resolver) { placeholderResolver = resolver; renderer = new MessageRenderer(resolver); }
     private static List<String> kinds() { return List.of("global", "staff", "message", "reply", "ignore", "toggle", "channel", "admin"); }
-    private Session session(Player player) { return sessions.computeIfAbsent(player.getUniqueId(), ignored -> new Session()); }
+    private Session session(Player player) { return sessions.compute(player.getUniqueId(), (id, current) -> current != null && current.owner == player ? current : new Session(player)); }
     private String server(Player player) { return player.getCurrentServer().map(s -> s.getServerInfo().getName()).orElse(""); }
     private boolean permission(CommandSource source, Settings config, String name) {
         String node = config.get("permission." + name);
@@ -218,7 +218,7 @@ public final class NetworkChat {
         if (config == null) return;
         Player player = event.getPlayer();
         String backend = event.getServer().getServerInfo().getName();
-        Presence now = new Presence(player.getUsername(), backend, permission(player, config, "hidden"));
+        Presence now = new Presence(player, player.getUsername(), backend, permission(player, config, "hidden"));
         Presence previous = presence.put(player.getUniqueId(), now);
         // First backend connection only: switching servers is not a proxy join.
         if (previous == null && config.bool("announcements.join")) announce(player, config, now, true);
@@ -264,13 +264,20 @@ public final class NetworkChat {
     @Subscribe
     public void disconnect(DisconnectEvent event) {
         UUID id = event.getPlayer().getUniqueId();
-        Presence previous = presence.remove(id);
+        // A rejected duplicate login can share the UUID of a still-connected player.
+        // Only the actual connection owner may remove its presence/session state.
+        Presence current = presence.get(id);
+        if (current != null && current.owner() != event.getPlayer()) return;
+        if (current != null && !presence.remove(id, current)) return;
+        Session ownSession = sessions.get(id);
+        if (ownSession != null && ownSession.owner != event.getPlayer()) return;
+        Presence previous = current;
         Settings announcementConfig = settings;
         if (previous != null && announcementConfig != null && announcementConfig.bool("announcements.leave")) {
-            Presence leaving = new Presence(previous.name(), previous.server(), previous.hidden() || permission(event.getPlayer(), announcementConfig, "hidden"));
+            Presence leaving = new Presence(event.getPlayer(), previous.name(), previous.server(), previous.hidden() || permission(event.getPlayer(), announcementConfig, "hidden"));
             announce(event.getPlayer(), announcementConfig, leaving, false);
         }
-        sessions.remove(id);
+        if (ownSession != null && !sessions.remove(id, ownSession)) return;
         completions.disconnected(event.getPlayer());
         Settings config = settings;
         if (config != null) completions.refresh(config, proxy.getAllPlayers().stream().filter(p -> !p.getUniqueId().equals(id)).toList(),

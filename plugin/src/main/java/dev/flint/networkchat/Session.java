@@ -5,6 +5,9 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /** Session-only preferences and bounded per-channel cooldown state; removed on disconnect. */
 final class Session {
+    final com.velocitypowered.api.proxy.Player owner;
+    Session() { this(null); }
+    Session(com.velocitypowered.api.proxy.Player owner) { this.owner = owner; }
     volatile String channel;
     volatile boolean staffChat;
     volatile UUID reply;
