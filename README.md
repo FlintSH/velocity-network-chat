@@ -110,6 +110,8 @@ format.local=<dark_gray>[Local]</dark_gray> {prefix}<white>{player}</white><gray
 format.staff=<dark_gray>[<red>Staff</red>] [{server}]</dark_gray> {prefix}<white>{player}</white><yellow>: {message}</yellow>
 format.private-sent=<dark_gray>[You → {target}]</dark_gray> <white>{message}</white>
 format.private-received=<dark_gray>[{player} → You]</dark_gray> <white>{message}</white>
+format.join=<dark_gray>[<green>+</green>]</dark_gray> <white>{player}</white><gray> joined the network.</gray>
+format.leave=<dark_gray>[<red>-</red>]</dark_gray> <white>{player}</white><gray> left the network.</gray>
 ```
 
 Install [PAPIProxyBridge](https://modrinth.com/plugin/papiproxybridge) on the proxy **and** backends, and PlaceholderAPI with the relevant expansion on each backend. `%luckperms_prefix%` needs the LuckPerms expansion and backend LuckPerms data; `%vault_prefix%` can be used with the matching backend Vault setup. Check the bridge's requirements for each server version. The bridge is optional; chat still works when it is absent. The plugin resolves placeholders using the **sender's** UUID/current backend, including both private-message formats. You can put raw `%placeholder_name%` expressions directly in formats and player-facing response templates, or use `{prefix}` for the configured expression.
@@ -124,7 +126,7 @@ Separate global/local, staff, and private cooldowns use atomic per-player checks
 
 `announcements.join=true` and `announcements.leave=true` enable one announcement when a player first connects to a backend and one when that proxy session disconnects. Server switches and failed logins do not generate join/leave spam. Configure `format.join` and `format.leave` with `{player}` and `{server}`, using the existing template format mode. `announcements.scope=network|group` selects recipients; excluded servers and `permission.announcements` are respected. Hidden players are announced only to viewers with see-hidden permission (and themselves for joins).
 
-Join templates support PAPI while the backend connection is live. Leave templates use a literal username and the configured fallback for PAPI expressions because the player is already disconnected. Defaults therefore use names without a prefix. Set backend join/quit messages to empty in your backend plugin if you want to avoid also seeing its local announcements. Proxy shutdown may produce leave announcements until the plugin shuts down.
+Join templates support PAPI while the backend connection is live. Leave templates use a literal username and the configured fallback for PAPI expressions because the player is already disconnected. Defaults therefore use names without a prefix. Existing MiniMessage/plain configurations receive matching new announcement defaults when those keys are absent. Set backend join/quit messages to empty in your backend plugin if you want to avoid also seeing its local announcements. Proxy shutdown may produce leave announcements until the plugin shuts down.
 
 ## Network player-name completion
 

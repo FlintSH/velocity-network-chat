@@ -60,6 +60,13 @@ final class Settings {
                 throw new IllegalArgumentException("Unknown setting: " + key);
             values.put(key, v.toString().trim());
         });
+        // Older MiniMessage configurations do not yet define announcement formats.
+        // Supply matching defaults rather than displaying bundled legacy colour codes literally.
+        if (!values.get("format.mode").equals("legacy")) {
+            boolean mini = values.get("format.mode").equals("minimessage");
+            if (!configured.containsKey("format.join")) values.put("format.join", mini ? "<dark_gray>[<green>+</green>]</dark_gray> <white>{player}</white><gray> joined the network.</gray>" : "[+] {player} joined the network.");
+            if (!configured.containsKey("format.leave")) values.put("format.leave", mini ? "<dark_gray>[<red>-</red>]</dark_gray> <white>{player}</white><gray> left the network.</gray>" : "[-] {player} left the network.");
+        }
         Settings result = new Settings(values);
         result.validate();
         return result;

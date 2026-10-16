@@ -270,4 +270,9 @@ class NetworkChatTest {
         assertTrue(received.get(bob).isEmpty()); assertEquals(2, received.get(staff).size());
         initialize(false, "announcements.join=false\nannouncements.leave=false\n"); connectedTo(bob, "lobby"); when(quit.getPlayer()).thenReturn(bob); plugin.disconnect(quit); assertEquals(2, received.get(staff).size());
     }
+    @Test void announcementDefaultsUpgradeCleanlyIntoExistingMiniMessageConfigurations() throws Exception {
+        initialize(false, "format.mode=minimessage\n");Player alice=player("Alice","lobby"),bob=player("Bob","survival");
+        connectedTo(alice,"lobby");DisconnectEvent quit=mock(DisconnectEvent.class);when(quit.getPlayer()).thenReturn(alice);plugin.disconnect(quit);
+        assertEquals(List.of("[+] Alice joined the network.","[-] Alice left the network."),received.get(bob));
+    }
 }
