@@ -32,8 +32,9 @@ class SettingsTest {
     @Test void newLocationDefaultsFollowExistingMessageModeAndExposeServerIdTag() throws Exception {
         var plain = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText();
         for (String mode : java.util.List.of("minimessage", "plain")) {
-            Files.writeString(directory.resolve("config.properties"), "message.mode=" + mode + "\n");
-            Settings config = Settings.load(directory);
+            Path installation = Files.createDirectory(directory.resolve(mode));
+            Files.writeString(installation.resolve("config.properties"), "message.mode=" + mode + "\n");
+            Settings config = Settings.load(installation);
             assertEquals("You are on Survival.", plain.serialize(config.render("message.whereami", java.util.Map.of("server", "Survival"))));
             assertEquals("Bob is on Survival.", plain.serialize(config.render("message.find", java.util.Map.of("target", "Bob", "server", "Survival"))));
         }

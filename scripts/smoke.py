@@ -35,6 +35,7 @@ with tempfile.TemporaryDirectory(prefix="networkchat-smoke-") as temp:
     (root / "plugins/networkchat.jar").write_bytes(plugin.read_bytes())
     (root / "plugins/networkchat").mkdir()
     (root / "plugins/networkchat/config.properties").write_text("format.mode=minimessage\nmessage.mode=minimessage\nformat.global=<gray>[<server>]</gray> <prefix><player>: <message>\nmessage.status=<gradient:green:blue>Players:</gradient> <players>, sessions: <sessions>, capture: <capture>, SignedVelocity: <signed>.\nmessage.reload=<green>Configuration reloaded.</green>\n", encoding="utf-8")
+    (root / "plugins/networkchat/teleport.properties").write_text("message.players-only=&cTeleport language imported.\n", encoding="utf-8")
     (root / "plugins/bStats").mkdir()
     (root / "plugins/bStats/config.txt").write_text("enabled=false\n", encoding="utf-8")
     if bridge:
@@ -73,9 +74,14 @@ try = ["lobby"]
                     raise RuntimeError("Proxy exited before startup")
         else:
             raise TimeoutError("Proxy startup timed out")
-        for command, expected in (("networkchat status", "Players:"), ("networkchat reload", "Configuration reloaded"),
-                ("networkchat status", "Players:"), ("whereami", "Only players"),
-                ("find MissingPlayer", "unavailable"), ("tpa MissingPlayer", "Only players"), ("tp MissingPlayer", "Only players")):
+        language = root / "plugins/networkchat/language.properties"
+        assert language.exists(), "Separate language file was not generated"
+        assert "message.status=" in language.read_text(encoding="utf-8"), "Legacy language was not imported"
+        # Editing only the language file must override the retained old config templates.
+        language.write_text("message.status=<green>Players: language file, capture: {capture}</green>\nmessage.reload=<green>Configuration reloaded from language file.</green>\nmessage.players-only=<red>Language file: players only.</red>\nteleport.message.players-only=&cTeleport language file: players only.\n", encoding="utf-8")
+        for command, expected in (("networkchat status", "Players:"), ("networkchat reload", "Configuration reloaded from language file"),
+                ("networkchat status", "Players: language file, capture: true"), ("whereami", "Language file: players only"),
+                ("find MissingPlayer", "unavailable"), ("tpa MissingPlayer", "Teleport language imported"), ("tp MissingPlayer", "Teleport language imported")):
             process.stdin.write(command + "\n")
             process.stdin.flush()
             # Read the command's response before issuing the next command.
@@ -90,6 +96,24 @@ try = ["lobby"]
                     pass
             else:
                 raise TimeoutError(f"No response to {command}")
+        # An invalid language reload must keep the previous complete snapshot.
+        language.write_text("message.typo=invalid\n", encoding="utf-8")
+        (root / "plugins/networkchat/config.properties").write_text("format.mode=minimessage\nmessage.mode=minimessage\nchat.capture=false\n", encoding="utf-8")
+        for command, expected in (("networkchat reload", "Configuration invalid"),
+                                  ("networkchat status", "Players: language file, capture: true")):
+            process.stdin.write(command + "\n")
+            process.stdin.flush()
+            end = time.monotonic() + 15
+            while time.monotonic() < end:
+                try:
+                    line = output.get(timeout=1)
+                    lines.append(line)
+                    if expected in re.sub(r"\x1b\[[0-9;]*m", "", line):
+                        break
+                except queue.Empty:
+                    pass
+            else:
+                raise TimeoutError(f"No retained configuration response to {command}")
         process.stdin.write("shutdown\n")
         process.stdin.flush()
         process.wait(timeout=20)
@@ -101,7 +125,7 @@ try = ["lobby"]
         if bridge:
             assert "PAPIProxyBridge enabled for chat formatting" in log and "PAPIProxyBridge unavailable" not in log, "Optional bridge API failed"
         assert process.returncode == 0, f"Proxy exit code {process.returncode}"
-        print(f"PASS: baseline JAR loaded; status/reload, location and teleport commands worked on Velocity {version} (build {build['id']})")
+        print(f"PASS: baseline JAR loaded; language migration/reload, location and teleport commands worked on Velocity {version} (build {build['id']})")
     finally:
         if process.poll() is None:
             process.kill()

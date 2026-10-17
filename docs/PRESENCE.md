@@ -21,7 +21,7 @@ permissions also determine the audience.
 
 These defaults also apply when the keys are absent from an older
 `plugins/networkchat/config.properties` file. Existing files are preserved.
-Add or update the relevant lines, then run `/networkchat reload`:
+Keep these operational settings in `config.properties`:
 
 ```properties
 announcements.join=true
@@ -29,6 +29,12 @@ announcements.leave=true
 announcements.scope=network
 announcements.debug=false
 permission.announcements=
+```
+
+Edit announcement wording in `plugins/networkchat/language.properties`, then run
+`/networkchat reload`:
+
+```properties
 format.join=&8[&a+&8] &f{player} &7joined the network.
 format.leave=&8[&c-&8] &f{player} &7left the network.
 ```
@@ -55,7 +61,7 @@ those on Paper if the proxy announcement would duplicate them.
 Run `/networkchat status` with `networkchat.admin`. The bundled status message
 shows the join/leave switches, scope, tracked sessions and hidden-player count.
 If you customized `message.status`, add the corresponding placeholders from the
-bundled configuration or inspect the startup log.
+bundled language file or inspect the startup log.
 
 For a short controlled test, set `announcements.debug=true`, reload, and connect a
 test player while another eligible player is already online. The proxy log records
@@ -83,6 +89,6 @@ and visibility are checked again after any asynchronous placeholder lookup.
 `message.whereami` and `message.find` accept `{server}` for the display label and
 `{server-id}` for the raw Velocity backend name. `/find` also accepts `{target}`
 and `{player}` for the matched player's username. Usage, unavailable-server and
-denial messages are configurable in the same file. A nonexistent, hidden,
+denial messages are configurable in `language.properties`. A nonexistent, hidden,
 disconnected or not-yet-connected lookup target produces the same unavailable
 response.

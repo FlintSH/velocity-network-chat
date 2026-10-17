@@ -52,39 +52,17 @@ final class Settings {
         }
         Properties configured = new Properties();
         try (var reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) { configured.load(reader); }
+        Properties languageDefaults = LanguageSettings.defaults();
+        Properties language = LanguageSettings.load(directory);
         Map<String, String> values = new HashMap<>();
+        language.forEach((k, v) -> { if (!k.toString().startsWith("teleport.")) values.put(k.toString(), v.toString()); });
         defaults.forEach((k, v) -> values.put(k.toString(), v.toString()));
         configured.forEach((k, v) -> {
             String key = k.toString();
-            if (!defaults.containsKey(key) && !key.startsWith("routing.group.") && !key.startsWith("display.server."))
+            if (!defaults.containsKey(key) && !(languageDefaults.containsKey(key) && !key.startsWith("teleport.")) && !key.startsWith("routing.group.") && !key.startsWith("display.server."))
                 throw new IllegalArgumentException("Unknown setting: " + key);
-            values.put(key, v.toString().trim());
+            if (!languageDefaults.containsKey(key)) values.put(key, v.toString().trim());
         });
-        // Older MiniMessage configurations do not yet define announcement formats.
-        // Supply matching defaults rather than displaying bundled legacy colour codes literally.
-        if (!values.get("format.mode").equals("legacy")) {
-            boolean mini = values.get("format.mode").equals("minimessage");
-            if (!configured.containsKey("format.join")) values.put("format.join", mini ? "<dark_gray>[<green>+</green>]</dark_gray> <white>{player}</white><gray> joined the network.</gray>" : "[+] {player} joined the network.");
-            if (!configured.containsKey("format.leave")) values.put("format.leave", mini ? "<dark_gray>[<red>-</red>]</dark_gray> <white>{player}</white><gray> left the network.</gray>" : "[-] {player} left the network.");
-        }
-        // New response defaults must match the message mode of an existing installation.
-        if (!values.get("message.mode").equals("legacy")) {
-            boolean mini = values.get("message.mode").equals("minimessage");
-            Map<String, String> added = Map.of("whereami", "You are on {server}.", "find", "{target} is on {server}.",
-                "usage-whereami", "/whereami", "usage-find", "/find <player>", "server-unavailable", "Your server is not available yet.");
-            added.forEach((key, value) -> {
-                if (!configured.containsKey("message." + key)) values.put("message." + key,
-                    mini ? (key.equals("server-unavailable") ? "<red>" : "<yellow>") + value.replace("<player>", "[player]") : value);
-            });
-        }
-        if (!values.get("message.mode").equals("legacy")) {
-            Map<String, String> addedMessages = Map.of("whereami", "You are on {server}.", "find", "{target} is on {server}.",
-                "usage-whereami", "/whereami", "usage-find", "/find <player>", "server-unavailable", "You are not connected to a server.");
-            addedMessages.forEach((key, value) -> {
-                if (!configured.containsKey("message." + key)) values.put("message." + key,
-                    values.get("message.mode").equals("minimessage") ? "<yellow>" + value.replace("<player>", "\\<player>") + "</yellow>" : value);
-            });
-        }
         Settings result = new Settings(values);
         result.validate();
         return result;

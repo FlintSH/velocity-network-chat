@@ -11,7 +11,7 @@ Designed for many backend servers behind **one Velocity proxy**. Global chat can
 ## Install
 
 1. Download `velocity-network-chat-*.jar` from [Releases](https://github.com/FlintSH/velocity-network-chat/releases) and place it in the **Velocity proxy's** `plugins/` directory. This JAR belongs on Velocity; `networkchat-paper-bridge-*.jar` belongs on the participating Paper backends when enabling teleports.
-2. Restart Velocity. Configuration is generated in `plugins/networkchat/config.properties`.
+2. Restart Velocity. Settings are generated in `plugins/networkchat/config.properties`, with chat formats and player-facing text in `plugins/networkchat/language.properties`.
 3. Grant player permissions on the proxy, for example using LuckPerms Velocity:
    ```text
    /lpv group default permission set networkchat.msg true
@@ -77,17 +77,21 @@ Install the matching `networkchat-paper-bridge-*.jar` on each participating **Pa
 3. Restart the proxy and backends. If Inventory Sync is installed, update it too: the bridge waits for its new `isReady(UUID)` integration before teleporting. `require-inventory-sync: true` on the bridge also rejects arrivals when Inventory Sync is absent.
 4. Grant staff permissions **on Velocity**, for example `lpv group staff permission set networkchat.teleport.staff true` and `lpv group staff permission set networkchat.find true`. Ordinary requests and `/whereami` are available to everyone by default. Do not grant a blanket `networkchat.*` permission to ordinary players.
 
-The [teleport defaults](plugin/src/main/resources/teleport.properties) configure every command alias/message, request and staff permissions, server allowlist, chat-group restrictions, request lifetime, cooldown, incoming-request limit and simultaneous-transfer limit. The defaults allow requests between routing groups, expire them after 60 seconds, apply a 10-second request cooldown and allow 15 seconds for a transfer. `/ignore` prevents ordinary teleport requests between the affected players; staff teleports bypass ignore preferences but still respect hidden-player visibility and server/group restrictions.
+The [teleport defaults](plugin/src/main/resources/teleport.properties) configure command aliases, request and staff permissions, server allowlist, chat-group restrictions, request lifetime, cooldown, incoming-request limit and simultaneous-transfer limit. The defaults allow requests between routing groups, expire them after 60 seconds, apply a 10-second request cooldown and allow 15 seconds for a transfer. `/ignore` prevents ordinary teleport requests between the affected players; staff teleports bypass ignore preferences but still respect hidden-player visibility and server/group restrictions.
 
 The proxy first checks that the target backend bridge responds, then requests the server switch, then waits for confirmation of the actual location teleport. An absent bridge does not switch the player. Requests are tied to player sessions, expire, and cannot be accepted twice. Target server changes, disconnects and permission changes invalidate pending work. The proxy sends authenticated cancellation for invalidated transfers; cancellation can race an already completed teleport and cannot undo it. Every execution attempt has a short signed expiry and cannot run beyond the operation deadline. Backend protection plugins can cancel the teleport. A successful server switch followed by a rejected location teleport leaves the player on the destination backend, with a clear failure message; there is no automatic return transfer.
 
-Teleport aliases are claimed even for denied players, so `/tp` cannot fall through to a backend command. Rename aliases before restarting if another proxy plugin owns them. Set `enabled=false` in `teleport.properties` to leave all teleport aliases to other plugins. An empty secret retains the aliases but reports setup is required. Changes to this file require a proxy restart; `/networkchat reload` reloads chat/location/announcement settings only.
+Teleport aliases are claimed even for denied players, so `/tp` cannot fall through to a backend command. Rename aliases before restarting if another proxy plugin owns them. Set `enabled=false` in `teleport.properties` to leave all teleport aliases to other plugins. An empty secret retains the aliases but reports setup is required. Changes to this file and `teleport.message.*` in `language.properties` require a proxy restart; `/networkchat reload` reloads chat/location/announcement settings and their language only.
 
 The [Paper bridge guide](docs/TELEPORT-BRIDGE.md) covers world restrictions, authentication, replay limits and inventory readiness. The bridge authenticates messages with HMAC-SHA256, loads destination chunks asynchronously and rechecks the player sessions before calling Paper's cancellable teleport API. It never runs arbitrary commands received from clients. See PaperMC's guidance on [plugin-message forwarding](https://docs.papermc.io/velocity/dev/plugin-messaging/) and [teleport chunk loading](https://docs.papermc.io/paper/dev/entity-teleport/).
 
 ## Configuration
 
-Every format, response, command alias, and permission is configurable in the [annotated default configuration](plugin/src/main/resources/config.properties). It is UTF-8 Java Properties: use commas for lists, `true`/`false` for booleans, and escape literal backslashes as `\\`. Unknown keys, unsafe privileged permissions, invalid values, duplicate aliases, and unsupported config versions are rejected. Missing keys inherit bundled defaults, so existing configuration remains usable when defaults are extended. The plugin does not rewrite your file on reload.
+Routing, command aliases, permissions and other operational settings live in [config.properties](plugin/src/main/resources/config.properties). Chat formats and player-facing responses live in [language.properties](plugin/src/main/resources/language.properties), including teleport responses under `teleport.message.*`. The format modes remain in `config.properties` (`format.mode` and `message.mode`) and `teleport.properties` (`message-mode`). All three files use UTF-8 Java Properties: use commas for lists, `true`/`false` for booleans, and escape literal backslashes as `\\`. Unknown keys, unsafe privileged permissions, invalid values, duplicate aliases, and unsupported config versions are rejected. Missing keys inherit bundled defaults, so existing configuration remains usable when defaults are extended. The plugin does not rewrite your file on reload.
+
+On the first start or chat reload after upgrading, the plugin creates `language.properties` and imports your existing `format.*` and `message.*` templates from `config.properties`, plus `message.*` from `teleport.properties` as `teleport.message.*`. Existing files are preserved. After checking the generated language file, you can remove the old template lines from the two settings files; keep the format-mode settings. Entries in `language.properties` take precedence, followed by any retained legacy entries, then bundled defaults. An existing language file is never rewritten.
+
+Edit chat formats, announcements and command responses in `language.properties`, then use `/networkchat reload`. Teleport text changes require a proxy restart. When changing format modes, update the corresponding templates to match.
 
 Configuration is an immutable snapshot. A failed reload retains the previous settings. Alias changes are validated but require a restart to change registration; all other settings apply to subsequent operations.
 
@@ -131,13 +135,18 @@ private.respect-groups=false
 
 Formats support **MiniMessage**, legacy `&`/section-sign codes, or plain text. Existing configuration keeps `format.mode=legacy`; `message.mode` independently controls command/error responses so enabling MiniMessage for chat does not break existing response templates. MiniMessage runs in a shaded parser module with a string/JSON boundary, keeping its Adventure libraries isolated from the old or current proxy's libraries.
 
-Example for MiniMessage chat with a legacy-colored LuckPerms prefix:
+Example for MiniMessage chat with a legacy-colored LuckPerms prefix. Set these in `config.properties`:
 
 ```properties
 format.mode=minimessage
 placeholders.enabled=true
 placeholders.prefix=%luckperms_prefix%
 placeholders.format=legacy
+```
+
+Put the templates in `language.properties`:
+
+```properties
 format.global=<dark_gray>[<aqua>{server}</aqua>]</dark_gray> {prefix}<white>{player}</white><gray>: {message}</gray>
 format.local=<dark_gray>[Local]</dark_gray> {prefix}<white>{player}</white><gray>: {message}</gray>
 format.staff=<dark_gray>[<red>Staff</red>] [{server}]</dark_gray> {prefix}<white>{player}</white><yellow>: {message}</yellow>
@@ -157,7 +166,7 @@ Separate global/local, staff, and private cooldowns use atomic per-player checks
 
 ## Proxy join/leave announcements
 
-`announcements.join=true` and `announcements.leave=true` enable one announcement when a player first connects to a backend and one when that proxy session disconnects. Server switches and failed logins do not generate join/leave spam. Configure `format.join` and `format.leave` with `{player}` and `{server}`, using the existing template format mode. `announcements.scope=network|group` selects recipients; excluded servers and `permission.announcements` are respected. Hidden players are announced only to viewers with see-hidden permission (and themselves for joins).
+`announcements.join=true` and `announcements.leave=true` enable one announcement when a player first connects to a backend and one when that proxy session disconnects. Server switches and failed logins do not generate join/leave spam. Configure `format.join` and `format.leave` in `language.properties` with `{player}` and `{server}`, using the existing template format mode. `announcements.scope=network|group` selects recipients; excluded servers and `permission.announcements` are respected. Hidden players are announced only to viewers with see-hidden permission (and themselves for joins).
 
 Join templates support PAPI while the backend connection is live. Leave templates use a literal username and the configured fallback for PAPI expressions because the player is already disconnected. Defaults therefore use names without a prefix. Existing MiniMessage/plain configurations receive matching new announcement defaults when those keys are absent. Set backend join/quit messages to empty in your backend plugin if you want to avoid also seeing its local announcements. Proxy shutdown may produce leave announcements until the plugin shuts down.
 

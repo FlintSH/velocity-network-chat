@@ -29,6 +29,11 @@ class NetworkChatTest {
     final Map<Player, List<String>> received = new HashMap<>();
     @BeforeEach void setup() throws Exception { initialize(false, "chat.cooldown-ms=0\nprivate.cooldown-ms=0\nstaff.cooldown-ms=0\n"); }
     void initialize(boolean signed, String config) throws Exception {
+        // Each fixture supplies a complete new configuration, including its language overrides.
+        Files.writeString(directory.resolve("language.properties"), config.lines()
+            .filter(line -> (line.startsWith("format.") || line.startsWith("message."))
+                && !line.startsWith("format.mode=") && !line.startsWith("message.mode="))
+            .collect(java.util.stream.Collectors.joining("\n")));
         Files.writeString(directory.resolve("config.properties"), config);
         commands.clear(); proxy = mock(ProxyServer.class); manager = mock(CommandManager.class);
         PluginManager plugins = mock(PluginManager.class);
@@ -137,6 +142,20 @@ class NetworkChatTest {
         Player alice = player("Alice", "lobby"), bob = player("Bob", "survival"); grant(alice, "networkchat.admin");
         Files.writeString(directory.resolve("config.properties"), "routing.group.survival=isolated\n"); run("nchat", alice, "reload"); run("g", alice, "hello");
         assertTrue(received.get(bob).isEmpty()); assertTrue(received.get(alice).get(0).startsWith("Configuration reloaded"));
+    }
+    @Test void languageReloadUpdatesMessagesAndInvalidLanguageRetainsActiveSnapshot() throws Exception {
+        Player alice = player("Alice", "lobby"), bob = player("Bob", "survival"); grant(alice, "networkchat.admin");
+        Files.writeString(directory.resolve("language.properties"), "format.global=Custom {player}: {message}\nmessage.reload=Language reloaded\n");
+        run("nchat", alice, "reload"); run("g", alice, "hello");
+        assertEquals("Language reloaded", received.get(alice).get(0));
+        assertEquals(List.of("Custom Alice: hello"), received.get(bob));
+        Files.writeString(directory.resolve("language.properties"), "message.typo=invalid\n");
+        run("nchat", alice, "reload"); run("g", alice, "again");
+        assertTrue(received.get(alice).stream().anyMatch(s -> s.startsWith("Configuration invalid")));
+        assertEquals(List.of("Custom Alice: hello", "Custom Alice: again"), received.get(bob));
+        Files.writeString(directory.resolve("language.properties"), "format.global=Recovered {message}\n");
+        run("nchat", alice, "reload"); run("g", alice, "hello");
+        assertEquals("Recovered hello", received.get(bob).get(2));
     }
     @Test void disconnectClearsReplyLinkAndDoesNotMessageReconnectedTarget() {
         Player alice = player("Alice", "lobby"), bob = player("Bob", "survival"); grant(alice, "networkchat.msg"); grant(bob, "networkchat.msg");

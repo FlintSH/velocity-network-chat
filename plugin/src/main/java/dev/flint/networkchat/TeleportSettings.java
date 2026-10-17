@@ -49,10 +49,14 @@ final class TeleportSettings {
         if (Files.notExists(file)) try (var input = TeleportSettings.class.getResourceAsStream("/teleport.properties")) { Files.copy(input, file); }
         Properties configured = new Properties();
         try (var reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) { configured.load(reader); }
+        Properties languageDefaults = LanguageSettings.defaults();
         for (String key : configured.stringPropertyNames()) {
-            if (!defaults.containsKey(key)) throw new IllegalArgumentException("Unknown teleport setting: " + key);
+            if (!defaults.containsKey(key) && !languageDefaults.containsKey("teleport." + key)) throw new IllegalArgumentException("Unknown teleport setting: " + key);
             defaults.setProperty(key, configured.getProperty(key));
         }
+        Properties language = LanguageSettings.load(directory);
+        for (String key : language.stringPropertyNames())
+            if (key.startsWith("teleport.")) defaults.setProperty(key.substring(9), language.getProperty(key));
         return new TeleportSettings(defaults);
     }
 

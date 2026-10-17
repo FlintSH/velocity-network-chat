@@ -13,6 +13,11 @@ import static org.junit.jupiter.api.Assertions.*;
 class MessageRendererTest {
     @TempDir Path directory;
     Settings config(String extra) throws Exception {
+        // Each fixture supplies a complete new configuration, including its language overrides.
+        Files.writeString(directory.resolve("language.properties"), extra.lines()
+            .filter(line -> (line.startsWith("format.") || line.startsWith("message."))
+                && !line.startsWith("format.mode=") && !line.startsWith("message.mode="))
+            .collect(java.util.stream.Collectors.joining("\n")));
         Files.writeString(directory.resolve("config.properties"), extra); return Settings.load(directory);
     }
     String plain(Component text) { return PlainTextComponentSerializer.plainText().serialize(text); }
