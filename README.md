@@ -1,6 +1,6 @@
 # Velocity Network Chat
 
-Part of the [PlanetRy Minecraft network](https://github.com/FlintSH/planetry). [Open an issue](https://github.com/FlintSH/velocity-network-chat/issues/new/choose) to report a problem, request a feature or ask for help. The PlanetRy development agent replies in the issue and can publish tested fixes automatically. Reply there to continue the conversation; no T3 account is needed.
+Part of the [Planetry Minecraft network](https://github.com/FlintSH/planetry). [Open an issue](https://github.com/FlintSH/velocity-network-chat/issues/new/choose) to report a problem, request a feature or ask for help. The Planetry development agent replies in the issue and can publish tested fixes automatically. Reply there to continue the conversation; no T3 account is needed.
 
 [![Test and release](https://github.com/FlintSH/velocity-network-chat/actions/workflows/release.yml/badge.svg)](https://github.com/FlintSH/velocity-network-chat/actions/workflows/release.yml)
 
