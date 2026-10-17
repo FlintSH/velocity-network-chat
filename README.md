@@ -2,13 +2,13 @@
 
 [![Test and release](https://github.com/FlintSH/velocity-network-chat/actions/workflows/release.yml/badge.svg)](https://github.com/FlintSH/velocity-network-chat/actions/workflows/release.yml)
 
-Cross-server chat, a separate permission-gated staff channel, and private messaging for a Velocity network. One JAR with an isolated MiniMessage parser, no database, no telemetry, and no message logging.
+Cross-server chat, staff chat, private messages, proxy join/leave announcements, player lookup and teleport requests for a Velocity network. Chat and lookup run on the proxy. Cross-server location teleports use an optional Paper companion. No database or telemetry is required by either Network Chat component.
 
 Designed for many backend servers behind **one Velocity proxy**. Global chat can span the whole proxy or be partitioned into server groups. Independent proxies are not connected: this release has no Redis transport or distributed player directory.
 
 ## Install
 
-1. Download the JAR from [Releases](https://github.com/FlintSH/velocity-network-chat/releases) and place it in the **Velocity proxy's** `plugins/` directory. Do not install it on Paper/Bukkit.
+1. Download `velocity-network-chat-*.jar` from [Releases](https://github.com/FlintSH/velocity-network-chat/releases) and place it in the **Velocity proxy's** `plugins/` directory. This JAR belongs on Velocity; `networkchat-paper-bridge-*.jar` belongs on the participating Paper backends when enabling teleports.
 2. Restart Velocity. Configuration is generated in `plugins/networkchat/config.properties`.
 3. Grant player permissions on the proxy, for example using LuckPerms Velocity:
    ```text
@@ -20,6 +20,7 @@ Designed for many backend servers behind **one Velocity proxy**. Global chat can
 4. For ordinary cross-server chat and staff toggling on modern clients, follow the signed-chat setup below. One-off `/g`, `/sc <message>`, and `/msg` work without that integration.
 5. For prefixes, install PAPIProxyBridge on the proxy and participating backends, plus PlaceholderAPI and your expansion on the backends. See the formatting example below.
 6. Edit the configuration and use `/networkchat reload` from the proxy console or as an administrator.
+7. For `/tpa` and `/tp`, follow [teleport setup](#teleports). Its separate `teleport.properties` and the Paper bridge configuration require a restart.
 
 ## Compatibility and signed chat
 
@@ -51,10 +52,36 @@ Legacy ordinary chat is intercepted directly. Excluded servers always retain the
 | `/chat global` or `/chat local` | Select routing for ordinary chat where capture is safe |
 | `/networkchat reload` (`/nchat`) | Validate and atomically reload configuration |
 | `/networkchat status` | Show connected players, session count, and integration state |
+| `/whereami` | Show your current backend server |
+| `/find <player>` | Staff lookup of an online player's backend; requires `networkchat.find` |
+| `/tpa <player>` (`/tpask`) | Ask to teleport to another player, including across backends |
+| `/tpaccept [player]` (`/tpyes`) | Accept an incoming request; name required if several are pending |
+| `/tpdeny [player]` (`/tpno`) | Deny an incoming request |
+| `/tpcancel` | Cancel your unaccepted outgoing request |
+| `/tp <player>` | Teleport yourself to another player without a request; requires `networkchat.teleport.staff` |
 
 Staff mode routes ordinary chat exclusively to staff until you use `/sc off`, toggle `/sc` again, or select `/chat global|local`. It is session-only and resets on disconnect. Enabling it needs both staff send and receive permission and safe chat capture on the current server. While enabled, server switches to excluded or unsafe backends are blocked; turn the mode off before switching. If a reload unexpectedly removes capture support, the next message is blocked and the sender is disconnected to protect staff privacy. Permission revocation never changes a staff message into a public message. `staff.toggle=false` prevents enabling the mode; turning an existing mode off remains available. One-off `/sc <message>` remains usable without capture support. Staff recipients are selected using `staff-receive` for each delivery; removing permission takes effect immediately. Staff messages are not suppressed by player ignore preferences. The sender needs both staff send and receive permission.
 
 Private/staff command aliases are claimed by the proxy even for players without permission, so denied messages are not forwarded to backend commands. Alias collisions with other proxy plugins abort initialization without intercepting chat. A startup failure is prominently logged; backend ordinary chat continues.
+
+`/whereami` and `/find` work without the Paper bridge. Both report the backend's display label; their templates can also show the raw `{server-id}`. Lookup honors hidden players and checks visibility again after asynchronous formatting. Join announcements now run after the backend connection is ready; an excluded authentication server delays the first announcement until an eligible server is reached. See [announcement settings and troubleshooting](docs/PRESENCE.md) if joins or leaves are missing, including inherited `networkchat.hidden` grants.
+
+## Teleports
+
+Install the matching `networkchat-paper-bridge-*.jar` on each participating **Paper/Purpur 26.1.2 / Java 25** backend. Chat remains compatible with the existing Velocity API matrix; this bridge build targets the specified backend version. No client mod is required.
+
+1. Generate a private secret with `openssl rand -hex 32`.
+2. Set `shared-secret=<that value>` in Velocity's `plugins/networkchat/teleport.properties`. Set the same value in each backend's `plugins/NetworkChatBridge/config.yml` under `shared-secret`. The proxy generates its file on first start; the bridge generates its file and disables itself until a secret is configured.
+3. Restart the proxy and backends. If Inventory Sync is installed, update it too: the bridge waits for its new `isReady(UUID)` integration before teleporting. `require-inventory-sync: true` on the bridge also rejects arrivals when Inventory Sync is absent.
+4. Grant staff permissions **on Velocity**, for example `lpv group staff permission set networkchat.teleport.staff true` and `lpv group staff permission set networkchat.find true`. Ordinary requests and `/whereami` are available to everyone by default. Do not grant a blanket `networkchat.*` permission to ordinary players.
+
+The [teleport defaults](plugin/src/main/resources/teleport.properties) configure every command alias/message, request and staff permissions, server allowlist, chat-group restrictions, request lifetime, cooldown, incoming-request limit and simultaneous-transfer limit. The defaults allow requests between routing groups, expire them after 60 seconds, apply a 10-second request cooldown and allow 15 seconds for a transfer. `/ignore` prevents ordinary teleport requests between the affected players; staff teleports bypass ignore preferences but still respect hidden-player visibility and server/group restrictions.
+
+The proxy first checks that the target backend bridge responds, then requests the server switch, then waits for confirmation of the actual location teleport. An absent bridge does not switch the player. Requests are tied to player sessions, expire, and cannot be accepted twice. Target server changes, disconnects and permission changes invalidate pending work. The proxy sends authenticated cancellation for invalidated transfers; cancellation can race an already completed teleport and cannot undo it. Every execution attempt has a short signed expiry and cannot run beyond the operation deadline. Backend protection plugins can cancel the teleport. A successful server switch followed by a rejected location teleport leaves the player on the destination backend, with a clear failure message; there is no automatic return transfer.
+
+Teleport aliases are claimed even for denied players, so `/tp` cannot fall through to a backend command. Rename aliases before restarting if another proxy plugin owns them. Set `enabled=false` in `teleport.properties` to leave all teleport aliases to other plugins. An empty secret retains the aliases but reports setup is required. Changes to this file require a proxy restart; `/networkchat reload` reloads chat/location/announcement settings only.
+
+The [Paper bridge guide](docs/TELEPORT-BRIDGE.md) covers world restrictions, authentication, replay limits and inventory readiness. The bridge authenticates messages with HMAC-SHA256, loads destination chunks asynchronously and rechecks the player sessions before calling Paper's cancellable teleport API. It never runs arbitrary commands received from clients. See PaperMC's guidance on [plugin-message forwarding](https://docs.papermc.io/velocity/dev/plugin-messaging/) and [teleport chunk loading](https://docs.papermc.io/paper/dev/entity-teleport/).
 
 ## Configuration
 
@@ -76,6 +103,10 @@ Configuration is an immutable snapshot. A failed reload retains the previous set
 | `permission.bypass-cooldown` | `networkchat.bypass.cooldown` | Bypass send cooldowns |
 | `permission.hidden` | `networkchat.hidden` | Hide a player from private-message lookup and player suggestions |
 | `permission.see-hidden` | `networkchat.see.hidden` | See hidden players in lookup/suggestions |
+| `permission.whereami` | Empty (everyone) | Show your own backend |
+| `permission.find` | `networkchat.find` | Look up another player's backend |
+
+Teleport permissions live in `teleport.properties`: `permission.request` defaults to everyone, `permission.staff` to `networkchat.teleport.staff`, and `permission.bypass-cooldown` to `networkchat.teleport.bypass-cooldown`. Staff and bypass permissions cannot be empty. Being a backend operator alone does not grant proxy permissions.
 
 Privileged permissions cannot be empty. `hidden` is a permission-based integration point; this plugin does not automatically discover another plugin's vanish state. If a hidden player speaks publicly, their public message is delivered normally. All permissions are evaluated on Velocity, so backend-only permission assignments are insufficient.
 
@@ -154,8 +185,17 @@ Build using JDK 17+ and Maven 3.9+:
 mvn -B -ntp clean verify
 ```
 
-The deployable shaded JAR is in `plugin/target/`. Do not deploy the `original-` JAR or the formatting module alone. Run `verify` from the repository root: it packages the isolated parser before running plugin tests. To check the latest API locally, use the matching JDK and `mvn -Dvelocity.api.version=4.2.0 clean verify`.
+The deployable proxy JAR is in `plugin/target/`. Do not deploy the `original-` JAR, protocol or formatting modules alone. Run `verify` from the repository root: it packages the isolated parser before running plugin tests. To check the latest API locally, use the matching JDK and `mvn -Dvelocity.api.version=4.2.0 clean verify`.
 
-Every branch push and pull request runs the API/Java compatibility matrix and real-proxy smoke checks. After all checks pass, **every commit pushed to `main`** publishes a uniquely versioned prerelease with the JAR and `SHA256SUMS`. The JAR's plugin metadata and manifest contain that same version. Re-running a release job updates its existing release assets. No personal access token or separate release secret is required: publication uses GitHub's scoped workflow token. Third-party actions are pinned by commit SHA; pull requests receive no write permissions. Manual workflow dispatch is also supported.
+Build both deployable JARs and run the Paper bridge probe with **JDK 25**:
+
+```sh
+mvn -B -ntp -Ppaper clean verify dependency:build-classpath -Dmdep.outputFile=target/test-classpath.txt
+python3 scripts/bridge-smoke.py paper-bridge/target/networkchat-paper-bridge-1.0.0.jar
+```
+
+The bridge JAR is in `paper-bridge/target/`. The probe starts an isolated local Paper server, accepts the Minecraft EULA for automated testing and exercises authenticated message handling, chunk loading, inventory-readiness integration, duplicate requests and cancellation with controlled player doubles. It does not simulate real clients or your gameplay plugin set. Follow the [staging checklist](docs/ACCEPTANCE.md) with two real clients before production.
+
+Every branch push and pull request runs the API/Java compatibility matrix, real-proxy smoke checks and real-Paper bridge probe. After all checks pass, **every commit pushed to `main`** publishes a uniquely versioned prerelease with both deployable JARs and `SHA256SUMS`. Publication downloads the exact checked artifacts, without rebuilding them. Plugin metadata and manifests contain the release version. Re-running a release job updates its existing release assets. No personal access token or separate release secret is required: publication uses GitHub's scoped workflow token. Third-party actions are pinned by commit SHA; pull requests receive no write permissions. Manual workflow dispatch is also supported.
 
 MIT licensed. Contributions and bug reports are welcome; include proxy, Java, client, backend, and SignedVelocity versions plus your relevant configuration (no secrets).

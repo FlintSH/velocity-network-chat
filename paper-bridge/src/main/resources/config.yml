@@ -1,0 +1,20 @@
+# Install on each Paper/Purpur 26.1.2 destination server. Java 25 is required.
+# Generate once with: openssl rand -hex 32
+# Copy the SAME value into shared-secret in Velocity's teleport.properties and every bridge.
+# Keep this secret private. Empty or shorter than 32 characters disables the bridge.
+shared-secret: ''
+
+# Empty allows every world. Blocked worlds always take precedence.
+# Both the mover's current world and the target's world must be permitted.
+allowed-worlds: []
+blocked-worlds: []
+
+# When NetworkInventorySync is installed, wait for its isReady(UUID) API before
+# teleporting. Disabled/old/incompatible versions fail closed. Update both JARs.
+# Set true if teleports must also fail when the inventory plugin is absent.
+require-inventory-sync: false
+
+# Bounded nonce and operation caches. Full caches reject new work until expiry.
+# Retention is 60 seconds; minimum 256, maximum 65536 entries per cache.
+# Roughly 30 attempts per teleport use around 30 nonce entries. Increase for busy hubs.
+replay-cache-size: 16384

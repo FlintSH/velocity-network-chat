@@ -67,6 +67,24 @@ final class Settings {
             if (!configured.containsKey("format.join")) values.put("format.join", mini ? "<dark_gray>[<green>+</green>]</dark_gray> <white>{player}</white><gray> joined the network.</gray>" : "[+] {player} joined the network.");
             if (!configured.containsKey("format.leave")) values.put("format.leave", mini ? "<dark_gray>[<red>-</red>]</dark_gray> <white>{player}</white><gray> left the network.</gray>" : "[-] {player} left the network.");
         }
+        // New response defaults must match the message mode of an existing installation.
+        if (!values.get("message.mode").equals("legacy")) {
+            boolean mini = values.get("message.mode").equals("minimessage");
+            Map<String, String> added = Map.of("whereami", "You are on {server}.", "find", "{target} is on {server}.",
+                "usage-whereami", "/whereami", "usage-find", "/find <player>", "server-unavailable", "Your server is not available yet.");
+            added.forEach((key, value) -> {
+                if (!configured.containsKey("message." + key)) values.put("message." + key,
+                    mini ? (key.equals("server-unavailable") ? "<red>" : "<yellow>") + value.replace("<player>", "[player]") : value);
+            });
+        }
+        if (!values.get("message.mode").equals("legacy")) {
+            Map<String, String> addedMessages = Map.of("whereami", "You are on {server}.", "find", "{target} is on {server}.",
+                "usage-whereami", "/whereami", "usage-find", "/find <player>", "server-unavailable", "You are not connected to a server.");
+            addedMessages.forEach((key, value) -> {
+                if (!configured.containsKey("message." + key)) values.put("message." + key,
+                    values.get("message.mode").equals("minimessage") ? "<yellow>" + value.replace("<player>", "\\<player>") + "</yellow>" : value);
+            });
+        }
         Settings result = new Settings(values);
         result.validate();
         return result;
@@ -81,14 +99,14 @@ final class Settings {
     boolean signedBackend(String server) { var servers = list("chat.signed-backends"); return servers.contains("*") || servers.contains(server.toLowerCase(Locale.ROOT)); }
     private void validate() {
         if (number("config-version") != 1) throw new IllegalArgumentException("Unsupported config-version");
-        for (String key : List.of("announcements.join", "announcements.leave", "chat.capture", "private.enabled", "private.allow-self", "private.respect-groups", "placeholders.enabled", "placeholders.inherit-name-color", "suggestions.chat", "suggestions.legacy-tab-list", "staff.toggle"))
+        for (String key : List.of("announcements.join", "announcements.leave", "announcements.debug", "chat.capture", "private.enabled", "private.allow-self", "private.respect-groups", "placeholders.enabled", "placeholders.inherit-name-color", "suggestions.chat", "suggestions.legacy-tab-list", "staff.toggle"))
             if (!Set.of("true", "false").contains(get(key))) throw new IllegalArgumentException("Expected true/false: " + key);
         for (String key : List.of("chat.cooldown-ms", "staff.cooldown-ms", "private.cooldown-ms"))
             if (number(key) < 0 || number(key) > 60000) throw new IllegalArgumentException("Cooldown must be 0–60000: " + key);
         if (number("chat.max-length") < 1 || number("chat.max-length") > 4096) throw new IllegalArgumentException("chat.max-length must be 1–4096");
         if (number("suggestions.limit") < 1 || number("suggestions.limit") > 500) throw new IllegalArgumentException("suggestions.limit must be 1–500");
         if (!Set.of("global", "local").contains(get("chat.default-channel"))) throw new IllegalArgumentException("Default channel must be global or local");
-        for (String key : List.of("permission.staff-send", "permission.staff-receive", "permission.admin", "permission.hidden", "permission.see-hidden", "permission.bypass-cooldown"))
+        for (String key : List.of("permission.staff-send", "permission.staff-receive", "permission.admin", "permission.find", "permission.hidden", "permission.see-hidden", "permission.bypass-cooldown"))
             if (get(key).isBlank()) throw new IllegalArgumentException("Privileged permission must not be empty: " + key);
         for (String key : List.of("format.mode", "message.mode", "placeholders.format"))
             if (!Set.of("legacy", "minimessage", "plain").contains(get(key))) throw new IllegalArgumentException("Expected legacy/minimessage/plain: " + key);
@@ -100,7 +118,7 @@ final class Settings {
         Text.expansion(get("placeholders.fallback"), get("placeholders.format"));
         if (!Set.of("network", "group").contains(get("announcements.scope"))) throw new IllegalArgumentException("announcements.scope must be network or group");
         Set<String> aliases = new HashSet<>();
-        for (String kind : List.of("global", "staff", "message", "reply", "ignore", "toggle", "channel", "admin")) {
+        for (String kind : List.of("global", "staff", "message", "reply", "ignore", "toggle", "channel", "whereami", "find", "admin")) {
             if (list("command." + kind).isEmpty()) throw new IllegalArgumentException("Empty command: " + kind);
             for (String alias : get("command." + kind).split(",")) {
                 alias = alias.trim().toLowerCase(Locale.ROOT);

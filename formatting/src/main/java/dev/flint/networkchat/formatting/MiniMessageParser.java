@@ -12,7 +12,7 @@ public final class MiniMessageParser {
     private MiniMessageParser() { }
     public static String parse(String template, boolean builtins) {
         TagResolver.Builder tags = TagResolver.builder();
-        if (builtins) for (String name : new String[]{"player", "target", "server", "message", "prefix", "state", "channel", "limit", "players", "sessions", "signed", "capture"})
+        if (builtins) for (String name : new String[]{"player", "target", "server", "message", "prefix", "state", "channel", "limit", "players", "sessions", "signed", "capture", "server-id", "join", "leave", "scope", "presence", "hidden", "announcement-debug", "command", "seconds", "accept", "deny", "cancel"})
             tags.tag(name, Tag.inserting(Component.text("{" + name + "}")));
         return GsonComponentSerializer.gson().serialize(MINI.deserialize(template, tags.build()));
     }

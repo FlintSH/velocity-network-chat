@@ -2,7 +2,8 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>dev.flint</groupId><artifactId>networkchat-parent</artifactId><version>1.0.0</version><packaging>pom</packaging>
   <name>Velocity Network Chat</name>
-  <modules><module>formatting</module><module>plugin</module></modules>
+  <modules><module>formatting</module><module>teleport-protocol</module><module>plugin</module></modules>
+  <profiles><profile><id>paper</id><modules><module>paper-bridge</module></modules></profile></profiles>
   <properties><maven.compiler.release>17</maven.compiler.release><velocity.api.version>3.1.1</velocity.api.version><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>
   <repositories><repository><id>papermc</id><url>https://repo.papermc.io/repository/maven-public/</url></repository><repository><id>william278</id><url>https://repo.william278.net/releases/</url></repository></repositories>
   <build><pluginManagement><plugins>

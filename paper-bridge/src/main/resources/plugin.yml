@@ -1,0 +1,7 @@
+name: NetworkChatBridge
+version: '${project.version}'
+main: dev.flint.networkchat.bridge.NetworkChatBridge
+api-version: '26.1.2'
+description: Authenticated teleport companion for Velocity Network Chat
+authors: [Flint]
+softdepend: [NetworkInventorySync]

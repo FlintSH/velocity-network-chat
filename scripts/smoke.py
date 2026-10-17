@@ -73,12 +73,13 @@ try = ["lobby"]
                     raise RuntimeError("Proxy exited before startup")
         else:
             raise TimeoutError("Proxy startup timed out")
-        for command in ("networkchat status", "networkchat reload", "networkchat status"):
+        for command, expected in (("networkchat status", "Players:"), ("networkchat reload", "Configuration reloaded"),
+                ("networkchat status", "Players:"), ("whereami", "Only players"),
+                ("find MissingPlayer", "unavailable"), ("tpa MissingPlayer", "Only players"), ("tp MissingPlayer", "Only players")):
             process.stdin.write(command + "\n")
             process.stdin.flush()
             # Read the command's response before issuing the next command.
             end = time.monotonic() + 15
-            expected = "Configuration reloaded" if "reload" in command else "Players:"
             while time.monotonic() < end:
                 try:
                     line = output.get(timeout=1)
@@ -100,7 +101,7 @@ try = ["lobby"]
         if bridge:
             assert "PAPIProxyBridge enabled for chat formatting" in log and "PAPIProxyBridge unavailable" not in log, "Optional bridge API failed"
         assert process.returncode == 0, f"Proxy exit code {process.returncode}"
-        print(f"PASS: baseline JAR loaded and status/reload worked on Velocity {version} (build {build['id']})")
+        print(f"PASS: baseline JAR loaded; status/reload, location and teleport commands worked on Velocity {version} (build {build['id']})")
     finally:
         if process.poll() is None:
             process.kill()

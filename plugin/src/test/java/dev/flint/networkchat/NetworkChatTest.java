@@ -34,6 +34,7 @@ class NetworkChatTest {
         PluginManager plugins = mock(PluginManager.class);
         when(proxy.getPluginManager()).thenReturn(plugins); when(plugins.isLoaded("signedvelocity")).thenReturn(signed);
         when(proxy.getCommandManager()).thenReturn(manager); when(proxy.getAllPlayers()).thenAnswer(i -> List.copyOf(players));
+        when(proxy.getChannelRegistrar()).thenReturn(mock(com.velocitypowered.api.proxy.messages.ChannelRegistrar.class));
         when(proxy.getAllServers()).thenReturn(List.of());
         when(proxy.getPlayer(anyString())).thenAnswer(i -> players.stream().filter(p -> p.getUsername().equalsIgnoreCase(i.getArgument(0))).findFirst());
         when(proxy.getPlayer(any(UUID.class))).thenAnswer(i -> players.stream().filter(p -> p.getUniqueId().equals(i.getArgument(0))).findFirst());
@@ -66,7 +67,7 @@ class NetworkChatTest {
             .when(player).sendMessage(any(Component.class));
         players.add(player); return player;
     }
-    SimpleCommand.Invocation invocation(Player player, String... args) {
+    SimpleCommand.Invocation invocation(CommandSource player, String... args) {
         SimpleCommand.Invocation invocation = mock(SimpleCommand.Invocation.class); when(invocation.source()).thenReturn(player); when(invocation.arguments()).thenReturn(args); return invocation;
     }
     void run(String alias, Player sender, String... args) { commands.get(alias).execute(invocation(sender, args)); }
@@ -248,10 +249,10 @@ class NetworkChatTest {
         Player alice = player("Alice", "lobby"); PlayerChatEvent event = new PlayerChatEvent(alice, "hello"); plugin.chat(event); assertTrue(event.getResult().isAllowed());
     }
     void connectedTo(Player player, String name) {
-        var event = mock(com.velocitypowered.api.event.player.ServerConnectedEvent.class);
-        var backend = mock(com.velocitypowered.api.proxy.server.RegisteredServer.class);
-        when(backend.getServerInfo()).thenReturn(new ServerInfo(name, new java.net.InetSocketAddress("localhost", 25565)));
-        when(event.getPlayer()).thenReturn(player); when(event.getServer()).thenReturn(backend); plugin.connected(event);
+        ServerConnection connection = mock(ServerConnection.class);
+        when(connection.getServerInfo()).thenReturn(new ServerInfo(name, new java.net.InetSocketAddress("localhost", 25565)));
+        when(player.getCurrentServer()).thenReturn(Optional.of(connection));
+        plugin.connected(new com.velocitypowered.api.event.player.ServerPostConnectEvent(player, null));
     }
     @Test void announcesOnlyProxyJoinAndLeaveNotServerSwitchesOrFailedLogins() {
         Player alice = player("Alice", "lobby"), bob = player("Bob", "survival");
@@ -283,5 +284,138 @@ class NetworkChatTest {
         plugin.chat(new PlayerChatEvent(alice,"staff secret"));
         assertEquals(List.of("[+] Alice joined the network."),received.get(viewer));
         assertTrue(received.get(alice).contains("[Staff] [lobby] Alice: staff secret"));
+    }
+    @Test void joinWaitsForPostConnectSoTheJoiningPlayerCanReceiveIt() throws Exception {
+        Player alice = player("Alice", "lobby"), bob = player("Bob", "survival");
+        when(alice.getCurrentServer()).thenReturn(Optional.empty());
+        var backend = mock(com.velocitypowered.api.proxy.server.RegisteredServer.class);
+        when(backend.getServerInfo()).thenReturn(new ServerInfo("lobby", new java.net.InetSocketAddress("localhost", 25565)));
+        var early = new com.velocitypowered.api.event.player.ServerConnectedEvent(alice, backend, null);
+        // Reproduce Velocity's real lifecycle: the pre-ready event precedes currentServer.
+        for (var method : NetworkChat.class.getDeclaredMethods())
+            if (method.isAnnotationPresent(com.velocitypowered.api.event.Subscribe.class) && method.getParameterCount() == 1
+                && method.getParameterTypes()[0].isInstance(early)) method.invoke(plugin, early);
+        assertTrue(received.get(alice).isEmpty()); assertTrue(received.get(bob).isEmpty());
+        connectedTo(alice, "lobby");
+        assertEquals(List.of("[+] Alice joined the network."), received.get(alice));
+        assertEquals(received.get(alice), received.get(bob));
+    }
+    @Test void excludedLoginServerDefersJoinUntilFirstEligibleBackend() throws Exception {
+        initialize(false, "chat.excluded-servers=auth\n");
+        Player alice = player("Alice", "auth"), bob = player("Bob", "survival");
+        connectedTo(alice, "auth"); assertTrue(received.get(bob).isEmpty());
+        connectedTo(alice, "lobby"); connectedTo(alice, "survival"); connectedTo(alice, "lobby");
+        assertEquals(List.of("[+] Alice joined the network."), received.get(bob));
+        when(alice.getCurrentServer()).thenReturn(Optional.empty()); when(alice.isActive()).thenReturn(false);
+        DisconnectEvent quit = mock(DisconnectEvent.class); when(quit.getPlayer()).thenReturn(alice); plugin.disconnect(quit);
+        assertEquals(List.of("[+] Alice joined the network.", "[-] Alice left the network."), received.get(bob));
+    }
+    @Test void noLeaveForPlayersWhoOnlyReachedAnExcludedLoginServer() throws Exception {
+        initialize(false, "chat.excluded-servers=auth\n");
+        Player alice = player("Alice", "auth"), bob = player("Bob", "survival"); connectedTo(alice, "auth");
+        DisconnectEvent quit = mock(DisconnectEvent.class); when(quit.getPlayer()).thenReturn(alice); plugin.disconnect(quit);
+        assertTrue(received.get(bob).isEmpty());
+    }
+    @Test void inactiveLatePostConnectCannotCreatePresenceAfterDisconnect() {
+        Player alice = player("Alice", "lobby"), bob = player("Bob", "survival"); when(alice.isActive()).thenReturn(false);
+        connectedTo(alice, "lobby");
+        DisconnectEvent quit = mock(DisconnectEvent.class); when(quit.getPlayer()).thenReturn(alice); plugin.disconnect(quit);
+        assertTrue(received.get(bob).isEmpty());
+    }
+    @Test void leaveUsesLastBackendAndDoesNotRequireJoinAnnouncementsEnabled() throws Exception {
+        initialize(false, "announcements.join=false\nformat.leave={player} left {server}\n");
+        Player alice = player("Alice", "lobby"), bob = player("Bob", "survival");
+        connectedTo(alice, "lobby"); connectedTo(alice, "survival"); when(alice.getCurrentServer()).thenReturn(Optional.empty());
+        DisconnectEvent quit = mock(DisconnectEvent.class); when(quit.getPlayer()).thenReturn(alice); plugin.disconnect(quit);
+        assertEquals(List.of("Alice left survival"), received.get(bob));
+    }
+    @Test void delayedJoinCannotBeDeliveredByAnOldConnectionAfterReconnect() throws Exception {
+        initialize(false, "format.join={prefix}{player} joined\n");
+        Player alice = player("Alice", "lobby"), bob = player("Bob", "survival");
+        var pending = new java.util.concurrent.CompletableFuture<String>();
+        plugin.usePlaceholderResolver((expression, id) -> pending); connectedTo(alice, "lobby");
+        DisconnectEvent quit = mock(DisconnectEvent.class); when(quit.getPlayer()).thenReturn(alice); plugin.disconnect(quit);
+        UUID originalId = alice.getUniqueId(); Player reconnect = player("Alice", "lobby"); when(reconnect.getUniqueId()).thenReturn(originalId);
+        plugin.usePlaceholderResolver(null); connectedTo(reconnect, "lobby"); received.get(bob).clear();
+        pending.complete("[STALE] "); assertTrue(received.get(bob).isEmpty());
+    }
+    @Test void joinPermissionsAreIndependentOfChatCaptureAndGlobalReceive() throws Exception {
+        initialize(false, "chat.capture=false\npermission.global-receive=chat.read\npermission.announcements=presence.read\n");
+        Player alice = player("Alice", "lobby"), bob = player("Bob", "survival"), denied = player("Denied", "lobby");
+        grant(bob, "presence.read"); connectedTo(alice, "lobby");
+        assertEquals(List.of("[+] Alice joined the network."), received.get(bob)); assertTrue(received.get(denied).isEmpty());
+    }
+    @Test void playersAlreadyOnlineAtEnableHaveLeaveTrackedWithoutReplayingJoins() throws Exception {
+        Player alice = player("Alice", "lobby"), bob = player("Bob", "survival"); initialize(false, "");
+        assertTrue(received.get(bob).isEmpty());
+        DisconnectEvent quit = mock(DisconnectEvent.class); when(quit.getPlayer()).thenReturn(alice); plugin.disconnect(quit);
+        assertEquals(List.of("[-] Alice left the network."), received.get(bob));
+    }
+    @Test void statusExposesEffectiveAnnouncementSettingsAndHiddenCount() {
+        Player staff = player("Staff", "lobby"), hidden = player("Hidden", "survival");
+        grant(staff, "networkchat.admin"); grant(hidden, "networkchat.hidden"); connectedTo(staff, "lobby");
+        run("nchat", staff, "status");
+        assertTrue(received.get(staff).get(1).contains("join=true, leave=true, scope=network, tracked=1, hidden=1, debug=false"));
+    }
+    @Test void whereamiReportsConfiguredLabelAndAllowsPermissionRestriction() throws Exception {
+        initialize(false, "display.server.lobby=Main Lobby\npermission.whereami=location.self\nmessage.whereami={player} @ {server} ({server-id})\n");
+        Player alice = player("Alice", "lobby"); run("whereami", alice);
+        assertEquals(List.of("You do not have permission."), received.get(alice)); grant(alice, "location.self"); run("whereami", alice);
+        assertEquals("Alice @ Main Lobby (lobby)", received.get(alice).get(1));
+        run("whereami", alice, "Bob"); assertEquals("/whereami", received.get(alice).get(2));
+        when(alice.getCurrentServer()).thenReturn(Optional.empty()); run("whereami", alice);
+        assertEquals("You are not connected to a server.", received.get(alice).get(3));
+    }
+    @Test void findIsPermissionLockedAndFiltersHiddenNamesFromLookupAndCompletion() throws Exception {
+        initialize(false, "display.server.survival=Survival World\n");
+        Player staff = player("Staff", "lobby"), bob = player("Bob", "survival"), hidden = player("Bobby", "survival");
+        grant(hidden, "networkchat.hidden"); run("find", staff, "Bob");
+        assertEquals(List.of("You do not have permission."), received.get(staff));
+        assertTrue(commands.get("find").hasPermission(invocation(staff, "Bob")));
+        assertEquals(List.of(), commands.get("find").suggest(invocation(staff, "B")));
+        grant(staff, "networkchat.find"); run("find", staff, "Bob");
+        assertEquals("Bob is on Survival World.", received.get(staff).get(1));
+        run("find", staff, "Bobby"); assertEquals("That player is unavailable.", received.get(staff).get(2));
+        assertEquals(List.of("Bob"), commands.get("find").suggest(invocation(staff, "B")));
+        grant(staff, "networkchat.see.hidden"); run("find", staff, "Bobby");
+        assertEquals("Bobby is on Survival World.", received.get(staff).get(3));
+        assertEquals(List.of("Bob", "Bobby"), commands.get("find").suggest(invocation(staff, "B")));
+    }
+    @Test void findRejectsDisconnectedPlayersAndInvalidArguments() {
+        Player staff = player("Staff", "lobby"), bob = player("Bob", "survival"); grant(staff, "networkchat.find");
+        run("find", staff); run("find", staff, "Bob", "ignored");
+        assertEquals(List.of("/find <player>", "/find <player>"), received.get(staff));
+        when(bob.isActive()).thenReturn(false); run("find", staff, "Bob");
+        assertEquals("That player is unavailable.", received.get(staff).get(2));
+        when(bob.isActive()).thenReturn(true); when(bob.getCurrentServer()).thenReturn(Optional.empty()); run("find", staff, "Bob");
+        assertEquals("That player is unavailable.", received.get(staff).get(3));
+        assertEquals(List.of(), commands.get("find").suggest(invocation(staff, "B")));
+    }
+    @Test void findRechecksPrivacyAfterDelayedPlaceholderResolution() throws Exception {
+        initialize(false, "message.find={prefix}{target} is on {server}.\n");
+        Player staff = player("Staff", "lobby"), bob = player("Bob", "survival"); grant(staff, "networkchat.find");
+        var pending = new java.util.concurrent.CompletableFuture<String>(); plugin.usePlaceholderResolver((expression, id) -> pending);
+        run("find", staff, "Bob"); grant(bob, "networkchat.hidden"); pending.complete("[STAFF] ");
+        assertEquals(List.of("That player is unavailable."), received.get(staff));
+    }
+    @Test void findSupportsConsoleWhileWhereamiIsPlayersOnly() {
+        Player bob = player("Bob", "survival"); CommandSource console = mock(CommandSource.class);
+        when(console.hasPermission("networkchat.find")).thenReturn(true);
+        commands.get("find").execute(invocation(console, "Bob"));
+        verify(console).sendMessage(argThat((Component value) -> PlainTextComponentSerializer.plainText().serialize(value).equals("Bob is on survival.")));
+        commands.get("whereami").execute(invocation(console));
+        verify(console).sendMessage(argThat((Component value) -> PlainTextComponentSerializer.plainText().serialize(value).equals("Only players can use this command.")));
+    }
+    @Test void lookupAliasesPermissionsAndMessagesCanBeCustomized() throws Exception {
+        initialize(false, "command.whereami=location,loc\ncommand.find=locate\npermission.find=staff.locate\nmessage.whereami=Connected: {server-id}\nmessage.find={target}: {server-id}\n");
+        Player staff = player("Staff", "lobby"), bob = player("Bob", "survival"); grant(staff, "staff.locate");
+        assertFalse(commands.containsKey("whereami")); assertFalse(commands.containsKey("find"));
+        run("loc", staff); run("locate", staff, "Bob");
+        assertEquals(List.of("Connected: lobby", "Bob: survival"), received.get(staff));
+    }
+    @Test void newLookupDefaultsHonorExistingMiniMessageMode() throws Exception {
+        initialize(false, "message.mode=minimessage\n"); Player staff = player("Staff", "lobby"), bob = player("Bob", "survival"); grant(staff, "networkchat.find");
+        run("whereami", staff); run("find", staff, "Bob"); run("find", staff);
+        assertEquals(List.of("You are on lobby.", "Bob is on survival.", "/find <player>"), received.get(staff));
     }
 }

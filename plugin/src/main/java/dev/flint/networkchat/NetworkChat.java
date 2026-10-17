@@ -5,6 +5,7 @@ import com.velocitypowered.api.command.*;
 import com.velocitypowered.api.event.*;
 import com.velocitypowered.api.event.player.*;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
+import com.velocitypowered.api.event.connection.PluginMessageEvent;
 import com.velocitypowered.api.event.proxy.*;
 import com.velocitypowered.api.plugin.*;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
@@ -31,8 +32,9 @@ public final class NetworkChat {
     private MessageRenderer renderer = new MessageRenderer(null);
     private final ChatCompletion completions;
     private ScheduledTask completionTask;
+    private TeleportService teleports;
     private final ConcurrentMap<UUID, Presence> presence = new ConcurrentHashMap<>();
-    private record Presence(Player owner, String name, String server, boolean hidden) { }
+    private record Presence(Player owner, String name, String server, boolean hidden, boolean joined) { }
 
     @Inject
     public NetworkChat(ProxyServer proxy, Logger logger, @DataDirectory Path directory) {
@@ -43,6 +45,9 @@ public final class NetworkChat {
     public void initialize(ProxyInitializeEvent event) {
         try {
             settings = Settings.load(directory);
+            TeleportSettings teleportSettings = TeleportSettings.load(directory);
+            teleports = new TeleportService(this, proxy, teleportSettings, () -> settings, (from, to) ->
+                !session(from).ignored.contains(to.getUniqueId()) && !session(to).ignored.contains(from.getUniqueId()));
             signedVelocity = proxy.getPluginManager().isLoaded("signedvelocity");
             if (proxy.getPluginManager().isLoaded("papiproxybridge")) {
                 try { placeholderResolver = new PapiBridge(); placeholderResolver.configure(settings); logger.info("PAPIProxyBridge enabled for chat formatting"); }
@@ -52,31 +57,43 @@ public final class NetworkChat {
             // Validate every alias before registering any commands.
             for (String kind : kinds()) for (String alias : settings.list("command." + kind))
                 if (proxy.getCommandManager().hasCommand(alias)) throw new IllegalArgumentException("Command already registered: /" + alias);
+            teleports.validateAliases(kinds().stream().flatMap(kind -> settings.list("command." + kind).stream()).toList());
             for (String kind : kinds()) {
                 List<String> aliases = new ArrayList<>(settings.list("command." + kind));
                 proxy.getCommandManager().register(proxy.getCommandManager().metaBuilder(aliases.get(0))
                     .aliases(aliases.subList(1, aliases.size()).toArray(String[]::new)).plugin(this).build(), new ChatCommand(kind));
                 registered.addAll(aliases);
             }
+            teleports.start();
+            if (teleportSettings.bool("enabled") && !teleportSettings.configured())
+                logger.warn("Network teleports need a shared secret in teleport.properties and the Paper bridge on participating backends. Chat and location commands remain available.");
+            // Track players already online when enabled, without replaying their joins.
+            for (Player player : proxy.getAllPlayers()) {
+                String backend = server(player);
+                if (player.isActive() && !backend.isEmpty()) presence.put(player.getUniqueId(),
+                    new Presence(player, player.getUsername(), backend, permission(player, settings, "hidden"), !settings.excluded(backend)));
+            }
             startCompletions();
             logger.info("Network Chat enabled for {} backend servers. SignedVelocity: {}", proxy.getAllServers().size(), signedVelocity);
+            logger.info("Proxy announcements: join={}, leave={}, scope={}, debug={}", settings.bool("announcements.join"), settings.bool("announcements.leave"), settings.get("announcements.scope"), settings.bool("announcements.debug"));
             if (!signedVelocity) logger.warn("Signed chat capture is disabled. /g and /sc work; install SignedVelocity on proxy and backends for normal modern cross-server chat.");
         } catch (Exception exception) {
+            if (teleports != null) { teleports.close(); teleports = null; }
             registered.forEach(proxy.getCommandManager()::unregister);
             registered.clear(); settings = null;
             logger.error("Network Chat failed to initialize; no chat is intercepted", exception);
         }
     }
     void usePlaceholderResolver(PlaceholderResolver resolver) { placeholderResolver = resolver; renderer = new MessageRenderer(resolver); }
-    private static List<String> kinds() { return List.of("global", "staff", "message", "reply", "ignore", "toggle", "channel", "admin"); }
+    private static List<String> kinds() { return List.of("global", "staff", "message", "reply", "ignore", "toggle", "channel", "whereami", "find", "admin"); }
     private Session session(Player player) { return sessions.compute(player.getUniqueId(), (id, current) -> current != null && current.owner == player ? current : new Session(player)); }
     private String server(Player player) { return player.getCurrentServer().map(s -> s.getServerInfo().getName()).orElse(""); }
     private boolean permission(CommandSource source, Settings config, String name) {
         String node = config.get("permission." + name);
         return node.isEmpty() || source.hasPermission(node);
     }
-    private boolean visible(Player viewer, Player target, Settings config) {
-        return viewer.getUniqueId().equals(target.getUniqueId()) || !permission(target, config, "hidden") || permission(viewer, config, "see-hidden");
+    private boolean visible(CommandSource viewer, Player target, Settings config) {
+        return (viewer instanceof Player player && player.getUniqueId().equals(target.getUniqueId())) || !permission(target, config, "hidden") || permission(viewer, config, "see-hidden");
     }
     private boolean canCapture(Player player, Settings config) {
         // 760 = 1.19.1: denial can break a signed chat chain without backend coordination.
@@ -97,6 +114,19 @@ public final class NetworkChat {
     private boolean allowed(Player player, Settings config, String permission) {
         if (!permission(player, config, permission)) { notice(player, config, "no-permission"); return false; }
         return true;
+    }
+    private void location(CommandSource viewer, Player target, Settings config, String backend) {
+        Map<String, String> values = Map.of("target", target.getUsername(), "player", target.getUsername(), "server", config.label(backend), "server-id", backend);
+        renderer.render(config, "message.find", target.getUniqueId(), values).thenAccept(message -> {
+            Settings live = settings;
+            if (live == null || (viewer instanceof Player player && !player.isActive())) return;
+            if (!permission(viewer, live, "find")) { notice(viewer, live, "no-permission"); return; }
+            // A placeholder lookup can complete after a player vanishes or changes server.
+            if (!target.isActive() || !visible(viewer, target, live) || !server(target).equals(backend)) {
+                notice(viewer, live, "unavailable"); return;
+            }
+            viewer.sendMessage(message);
+        });
     }
     private boolean validate(Player player, Settings config, String channel, String message) {
         if (!Text.valid(message, config.number("chat.max-length"))) {
@@ -212,19 +242,33 @@ public final class NetworkChat {
         if (config != null) completions.complete(event, config, proxy.getAllPlayers(), (viewer, target) -> visible(viewer, target, config));
     }
     @Subscribe
-    public void connected(ServerConnectedEvent event) {
-        completions.backendChanged(event.getPlayer()); refreshCompletions();
+    public void connected(ServerPostConnectEvent event) {
         Settings config = settings;
         if (config == null) return;
         Player player = event.getPlayer();
-        String backend = event.getServer().getServerInfo().getName();
-        Presence now = new Presence(player, player.getUsername(), backend, permission(player, config, "hidden"));
-        Presence previous = presence.put(player.getUniqueId(), now);
-        // First backend connection only: switching servers is not a proxy join.
-        if (previous == null && config.bool("announcements.join")) announce(player, config, now, true);
+        // ServerConnectedEvent runs before getCurrentServer() and the client are ready.
+        // The post-connect event is available since the supported Velocity 3.1.1 API.
+        String backend = server(player);
+        if (!player.isActive() || backend.isEmpty()) return;
+        AtomicBoolean first = new AtomicBoolean();
+        Presence now = presence.compute(player.getUniqueId(), (id, previous) -> {
+            if (!player.isActive()) return previous;
+            if (previous != null && previous.owner() != player && previous.owner().isActive()) return previous;
+            boolean joined = previous != null && previous.owner() == player && previous.joined();
+            // An excluded login/auth server defers the join until the first eligible server.
+            first.set(!joined && !config.excluded(backend));
+            return new Presence(player, player.getUsername(), backend, permission(player, config, "hidden"), joined || first.get());
+        });
+        if (now == null || now.owner() != player || !player.isActive()) return;
+        if (config.bool("announcements.debug")) logger.info("Presence ready: player={}, server={}, hidden={}, first={}, join-enabled={}", player.getUsername(), backend, now.hidden(), first.get(), config.bool("announcements.join"));
+        if (first.get() && config.bool("announcements.join")) announce(player, config, now, true);
+        completions.backendChanged(player); refreshCompletions();
     }
     private void announce(Player subject, Settings config, Presence information, boolean join) {
-        if (config.excluded(information.server())) return;
+        if (config.excluded(information.server())) {
+            if (config.bool("announcements.debug")) logger.info("Announcement skipped: player={}, event={}, excluded-server={}", information.name(), join ? "join" : "leave", information.server());
+            return;
+        }
         String key = join ? "format.join" : "format.leave";
         Map<String, String> input = Map.of("player", information.name(), "server", config.label(information.server()));
         CompletableFuture<Component> rendered;
@@ -239,17 +283,22 @@ public final class NetworkChat {
         }
         rendered.thenAccept(message -> {
             Settings live = settings;
-            if (live == null || (join && (presence.get(subject.getUniqueId()) == null || !subject.isActive()))) return;
+            Presence current = presence.get(subject.getUniqueId());
+            if (live == null || !live.bool(join ? "announcements.join" : "announcements.leave") || live.excluded(information.server())
+                || (join && (current == null || current.owner() != subject || !subject.isActive()))) return;
             boolean hidden = information.hidden() || (join && permission(subject, live, "hidden"));
+            int delivered = 0, unavailable = 0, noPermission = 0, hiddenAudience = 0, otherGroup = 0;
             for (Player recipient : proxy.getAllPlayers()) {
                 String destination = server(recipient);
-                if (!recipient.isActive() || (!join && recipient.getUniqueId().equals(subject.getUniqueId())) || destination.isEmpty() || live.excluded(destination)) continue;
-                if (!permission(recipient, live, "announcements")) continue;
-                if (hidden && !permission(recipient, live, "see-hidden") && !recipient.getUniqueId().equals(subject.getUniqueId())) continue;
-                if (live.get("announcements.scope").equals("group") && !live.group(destination).equals(live.group(information.server()))) continue;
-                recipient.sendMessage(message);
+                if (!recipient.isActive() || (!join && recipient.getUniqueId().equals(subject.getUniqueId())) || destination.isEmpty() || live.excluded(destination)) { unavailable++; continue; }
+                if (!permission(recipient, live, "announcements")) { noPermission++; continue; }
+                if (hidden && !permission(recipient, live, "see-hidden") && !recipient.getUniqueId().equals(subject.getUniqueId())) { hiddenAudience++; continue; }
+                if (live.get("announcements.scope").equals("group") && !live.group(destination).equals(live.group(information.server()))) { otherGroup++; continue; }
+                recipient.sendMessage(message); delivered++;
             }
-        });
+            if (live.bool("announcements.debug")) logger.info("Announcement: player={}, event={}, server={}, hidden={}, delivered={}, unavailable={}, denied-permission={}, hidden-audience={}, other-group={}",
+                information.name(), join ? "join" : "leave", information.server(), hidden, delivered, unavailable, noPermission, hiddenAudience, otherGroup);
+        }).exceptionally(error -> { logger.warn("Could not deliver {} announcement for {}", join ? "join" : "leave", information.name(), error); return null; });
     }
     private void refreshCompletions() {
         Settings config = settings;
@@ -263,6 +312,7 @@ public final class NetworkChat {
 
     @Subscribe
     public void disconnect(DisconnectEvent event) {
+        if (teleports != null) teleports.disconnect(event.getPlayer());
         UUID id = event.getPlayer().getUniqueId();
         // A rejected duplicate login can share the UUID of a still-connected player.
         // Only the actual connection owner may remove its presence/session state.
@@ -273,10 +323,11 @@ public final class NetworkChat {
         if (ownSession != null && ownSession.owner != event.getPlayer()) return;
         Presence previous = current;
         Settings announcementConfig = settings;
-        if (previous != null && announcementConfig != null && announcementConfig.bool("announcements.leave")) {
-            Presence leaving = new Presence(event.getPlayer(), previous.name(), previous.server(), previous.hidden() || permission(event.getPlayer(), announcementConfig, "hidden"));
+        if (previous != null && previous.joined() && announcementConfig != null && announcementConfig.bool("announcements.leave")) {
+            Presence leaving = new Presence(event.getPlayer(), previous.name(), previous.server(), previous.hidden() || permission(event.getPlayer(), announcementConfig, "hidden"), true);
             announce(event.getPlayer(), announcementConfig, leaving, false);
         }
+        if (announcementConfig != null && announcementConfig.bool("announcements.debug")) logger.info("Presence disconnected: player={}, tracked={}, leave-enabled={}", event.getPlayer().getUsername(), previous != null, announcementConfig.bool("announcements.leave"));
         if (ownSession != null && !sessions.remove(id, ownSession)) return;
         completions.disconnected(event.getPlayer());
         Settings config = settings;
@@ -286,7 +337,15 @@ public final class NetworkChat {
         sessions.values().forEach(state -> { if (id.equals(state.reply)) state.reply = null; });
     }
     @Subscribe
-    public void shutdown(ProxyShutdownEvent event) { settings = null; presence.clear(); if (completionTask != null) completionTask.cancel(); sessions.clear(); }
+    public void shutdown(ProxyShutdownEvent event) { settings = null; if (teleports != null) teleports.close(); presence.clear(); if (completionTask != null) completionTask.cancel(); sessions.clear(); }
+
+    @Subscribe
+    public void pluginMessage(PluginMessageEvent event) {
+        if (!TeleportService.CHANNEL.equals(event.getIdentifier())) return;
+        // Block client forwarding even when setup failed or teleports are disabled.
+        event.setResult(PluginMessageEvent.ForwardResult.handled());
+        if (teleports != null) teleports.message(event);
+    }
 
     private final class ChatCommand implements SimpleCommand {
         private final String kind;
@@ -298,8 +357,24 @@ public final class NetworkChat {
             if (config == null) return;
             CommandSource source = invocation.source(); String[] args = invocation.arguments();
             if (kind.equals("admin")) { admin(source, config, args); return; }
+            if (kind.equals("find")) {
+                if (!permission(source, config, "find")) { notice(source, config, "no-permission"); return; }
+                if (args.length != 1) { notice(source, config, "usage-find"); return; }
+                Optional<Player> target = proxy.getPlayer(args[0]).filter(Player::isActive).filter(p -> visible(source, p, config));
+                String backend = target.map(NetworkChat.this::server).orElse("");
+                if (backend.isEmpty()) { notice(source, config, "unavailable"); return; }
+                location(source, target.get(), config, backend);
+                return;
+            }
             if (!(source instanceof Player player)) { notice(source, config, "players-only"); return; }
             switch (kind) {
+                case "whereami" -> {
+                    if (!allowed(player, config, "whereami")) return;
+                    if (args.length != 0) { notice(player, config, "usage-whereami"); return; }
+                    String backend = server(player);
+                    if (backend.isEmpty()) { notice(player, config, "server-unavailable"); return; }
+                    notice(player, config, "whereami", Map.of("player", player.getUsername(), "server", config.label(backend), "server-id", backend));
+                }
                 case "staff" -> {
                     if (args.length == 0 || (args.length == 1 && Set.of("on", "off").contains(args[0].toLowerCase(Locale.ROOT)))) {
                         Session state = session(player);
@@ -379,14 +454,16 @@ public final class NetworkChat {
             if (args.length > 1) return List.of();
             String prefix = args.length == 0 ? "" : args[0].toLowerCase(Locale.ROOT);
             if (kind.equals("admin")) return permission(invocation.source(), config, "admin") ? List.of("reload", "status").stream().filter(s -> s.startsWith(prefix)).toList() : List.of();
+            if (kind.equals("find")) return permission(invocation.source(), config, "find") ? playerSuggestions(invocation.source(), config, prefix) : List.of();
             if (!(invocation.source() instanceof Player viewer)) return List.of();
             if (kind.equals("channel")) return List.of("global", "local").stream().filter(s -> s.startsWith(prefix)).toList();
             if (!Set.of("message", "ignore").contains(kind) || !permission(viewer, config, "private")) return List.of();
             return playerSuggestions(viewer, config, prefix);
         }
     }
-    private List<String> playerSuggestions(Player viewer, Settings config, String prefix) {
-        return proxy.getAllPlayers().stream().filter(Player::isActive).filter(p -> !p.getUniqueId().equals(viewer.getUniqueId()) && visible(viewer, p, config))
+    private List<String> playerSuggestions(CommandSource viewer, Settings config, String prefix) {
+        return proxy.getAllPlayers().stream().filter(Player::isActive).filter(p -> (!(viewer instanceof Player player) || !p.getUniqueId().equals(player.getUniqueId())) && visible(viewer, p, config))
+            .filter(p -> !server(p).isEmpty())
             .map(Player::getUsername).filter(s -> s.toLowerCase(Locale.ROOT).startsWith(prefix)).sorted(String.CASE_INSENSITIVE_ORDER)
             .limit(config.number("suggestions.limit")).toList();
     }
@@ -395,7 +472,9 @@ public final class NetworkChat {
         if (args.length != 1) { notice(source, config, "usage-admin"); return; }
         if (args[0].equalsIgnoreCase("status")) {
             source.sendMessage(config.render("message.status", Map.of("players", Integer.toString(proxy.getPlayerCount()),
-                "sessions", Integer.toString(sessions.size()), "signed", Boolean.toString(signedVelocity), "capture", config.get("chat.capture")))); return;
+                "sessions", Integer.toString(sessions.size()), "signed", Boolean.toString(signedVelocity), "capture", config.get("chat.capture"),
+                "join", config.get("announcements.join"), "leave", config.get("announcements.leave"), "scope", config.get("announcements.scope"),
+                "presence", Integer.toString(presence.size()), "hidden", Long.toString(proxy.getAllPlayers().stream().filter(p -> permission(p, config, "hidden")).count()), "announcement-debug", config.get("announcements.debug")))); return;
         }
         if (!args[0].equalsIgnoreCase("reload")) { notice(source, config, "usage-admin"); return; }
         if (!reloading.compareAndSet(false, true)) { notice(source, config, "reload-busy"); return; }
